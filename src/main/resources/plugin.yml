@@ -1,0 +1,12 @@
+name: ClanWars
+version: 2.0
+main: com.yourname.clanwars.ClanWarsCore
+api-version: '1.20'
+authors: [ "Admin" ]
+description: "Глобальный мод для Сезона 2: Кланы, Специализации, Экономика и Рейды"
+
+commands:
+  clan:
+    description: Основная команда системы кланов
+    aliases: [ c, clans ]
+    usage: /clan
