@@ -1,0 +1,29 @@
+# ==========================================
+#     CLAN WARS: СЕЗОН 2 - КОНФИГУРАЦИЯ
+# ==========================================
+
+discord:
+  bot-token: "ТВОЙ_ТОКЕН_БОТА"
+  guild-id: "ID_ТВОЕГО_СЕРВЕРА_DISCORD"
+  secret-role-id: "ID_РОЛИ_SECRET_В_ДИСКОРД"
+
+raids:
+  # Время окна уязвимости баз (Формат HH:mm, время серверное)
+  prime-time-start: "19:00"
+  prime-time-end: "22:00"
+  nexus-radius: 24
+
+economy:
+  creation:
+    base-cost: 2000
+    secret-cost: 500
+  prices:
+    forge-unbreakable: 500
+    radar-item: 100
+  nexus:
+    base-health: 5000
+    loot-percent: 0.3
+  
+limits:
+  # Максимальное количество грязных очков с мобов в день на 1 игрока
+  daily-pve-points: 500
