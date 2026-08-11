@@ -1,4 +1,4 @@
-package com.yourname.clanwars;
+package com.yourname.indeprofilebot;
 
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.JDA;
@@ -59,6 +59,7 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecutor {
 
@@ -336,7 +337,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
 
                 if (countDirtyPoints(p) < finalCost) {
                     p.sendMessage("§cДля создания клана нужно §e" + finalCost + " Грязных Очков§c в инвентаре!");
-                    if (!hasSecretRole) p.sendMessage("§7(Игрокам с ролью Secret в Discord создание обойдется всего в " + secretCost + " очков)");
+                    if (!hasSecretRole) p.sendMessage("§7(Игрокам с ролью Secret создание обойдется всего в " + secretCost + " очков)");
                     return true;
                 }
 
@@ -602,10 +603,10 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
         if (clan.getGuildType() == GuildType.SMUGGLER) baseHp = 18;
         
         double maxHp = baseHp + (cp.getMaxHealthLevel() * 2);
-        if (player.getAttribute(Attribute.GENERIC_MAX_HEALTH) != null) player.getAttribute(Attribute.GENERIC_MAX_HEALTH).setBaseValue(maxHp);
+        if (player.getAttribute(Attribute.MAX_HEALTH) != null) player.getAttribute(Attribute.MAX_HEALTH).setBaseValue(maxHp);
 
         switch (clan.getGuildType()) {
-            case ENGINEER: player.addPotionEffect(new PotionEffect(PotionEffectType.FAST_DIGGING, 60, 0, false, false, false)); break;
+            case ENGINEER: player.addPotionEffect(new PotionEffect(PotionEffectType.HASTE, 60, 0, false, false, false)); break;
             case SMUGGLER: player.addPotionEffect(new PotionEffect(PotionEffectType.SPEED, 60, 0, false, false, false)); break;
             case MAGE: player.addPotionEffect(new PotionEffect(PotionEffectType.REGENERATION, 60, 0, false, false, false)); break;
             case BLACKSMITH: player.addPotionEffect(new PotionEffect(PotionEffectType.FIRE_RESISTANCE, 60, 0, false, false, false)); break;
@@ -814,6 +815,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
         public Set<UUID> getMembers() { return members; } public ClanRank getRank() { return rank; } public void setRank(ClanRank r) { this.rank = r; }
         public GuildType getGuildType() { return selectedGuild; } public void setGuildType(GuildType t) { this.selectedGuild = t; }
         public long getBankPoints() { return bankPoints; } public void addBankPoints(long p) { this.bankPoints += p; }
+        public void setBankPoints(long p) { this.bankPoints = p; }
         public Location getNexusLocation() { return nexusLocation; } public void setNexusLocation(Location l) { this.nexusLocation = l; }
         public String getDiscordRoleId() { return discordRoleId; } public void setDiscordRoleId(String i) { this.discordRoleId = i; }
         public String getDiscordTextChannelId() { return discordTextChannelId; } public void setDiscordTextChannelId(String i) { this.discordTextChannelId = i; }
