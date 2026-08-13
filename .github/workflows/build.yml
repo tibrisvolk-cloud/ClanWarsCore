@@ -19,5 +19,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: IndepProfileBot
-          path: target/IndepProfileBot.jar
+          name: ClanWarsCore
+          path: target/ClanWarsCore.jar
