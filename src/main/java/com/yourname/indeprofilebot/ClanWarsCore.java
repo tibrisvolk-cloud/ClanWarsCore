@@ -688,6 +688,10 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
 
     private boolean isSpecialMob(Entity entity) {
         List<String> allowedTypes = getConfig().getStringList("special-mobs.types");
+        // Если список не задан в конфиге, используем дефолтный набор
+        if (allowedTypes.isEmpty()) {
+            allowedTypes = Arrays.asList("WITHER", "ELDER_GUARDIAN", "RAVAGER", "ENDER_DRAGON");
+        }
         if (allowedTypes.contains(entity.getType().name())) return true;
 
         if (getConfig().getBoolean("special-mobs.require-custom-name", false)) {
@@ -1100,7 +1104,6 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
                             plugin.openUpgradeMenu(player);
                             break;
                         case "BANK":
-                            // Здесь можно открыть меню сдачи очков
                             player.sendMessage("§eБанк: используйте /clan bank deposit <кол-во>");
                             break;
                     }
