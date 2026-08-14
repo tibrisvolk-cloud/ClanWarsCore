@@ -67,6 +67,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
     private final Map<UUID, List<ItemStack>> soulboundItems = new ConcurrentHashMap<>();
     private final Map<UUID, String> pendingInvites = new ConcurrentHashMap<>();
     private final Map<UUID, Long> radarCooldowns = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> lastDailyReward = new ConcurrentHashMap<>();
 
     private NamespacedKey dirtyKey, guildItemKey, nexusKey, pawboxKey, scrollInfernoKey, scrollPlagueKey, c4Key;
 
@@ -114,6 +115,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
 
         npcManager = new NPCManager(this);
 
+        // Пассивные эффекты
         new BukkitRunnable() {
             @Override
             public void run() {
@@ -121,6 +123,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
             }
         }.runTaskTimer(this, 20L, 20L);
 
+        // Автосохранение
         new BukkitRunnable() {
             @Override
             public void run() {
@@ -135,6 +138,24 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
     public void onDisable() {
         saveData();
         if (jda != null) jda.shutdown();
+    }
+
+    // ==========================================
+    //           ЕЖЕДНЕВНЫЙ БОНУС
+    // ==========================================
+    @EventHandler
+    public void onPlayerJoin(PlayerJoinEvent event) {
+        Player p = event.getPlayer();
+        ClanPlayer cp = getClanPlayer(p.getUniqueId());
+        long now = System.currentTimeMillis();
+        long last = lastDailyReward.getOrDefault(p.getUniqueId(), 0L);
+        if (now - last > 24 * 60 * 60 * 1000L) {
+            lastDailyReward.put(p.getUniqueId(), now);
+            int bonus = 50;
+            cp.addPersonalPoints(bonus);
+            p.sendMessage("§6[Ежедневный бонус] §aВы получили " + bonus + " очков за вход!");
+        }
+        applyGuildPassives(p);
     }
 
     // ==========================================
@@ -310,46 +331,28 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
         ClanPlayer cp = getClanPlayer(p.getUniqueId());
 
         if (args.length == 0) {
-            p.sendMessage("§e=== КЛАНЫ: СЕЗОН 2 ===");
-            p.sendMessage("§f/clan create <Название> <Тэг> - создать клан (2 буквы)");
-            p.sendMessage("§f/clan invite <Ник> - пригласить игрока");
-            p.sendMessage("§f/clan confirm <Ник_лидера> - принять приглашение");
-            p.sendMessage("§f/clan exit - выйти из клана (штраф!)");
-            p.sendMessage("§f/clan chat - вкл/выкл клановый чат");
-            p.sendMessage("§f/clan top - топ вкладчиков");
-            p.sendMessage("§f/clan info - информация о клане");
-            p.sendMessage("§f/clan bank deposit <кол-во> - сдать личные очки в казну");
-            p.sendMessage("§f/clan spec <КЛАСС> - выбрать специализацию (лидер, ранг D+)");
-            p.sendMessage("§f/clan upgrade - меню улучшений клана");
-            p.sendMessage("§f/clan forge - сковать артефакт (Кузнецы)");
-            p.sendMessage("§f/clan radar - получить трекер (Контрабандисты)");
-            p.sendMessage("§f/clan nexus - получить сердце клана (лидер)");
+            sendHelp(p);
             return true;
         }
 
         switch (args[0].toLowerCase()) {
+            case "help":
+                sendHelp(p);
+                break;
+
             case "create":
-                if (cp.getClanId() != null) {
-                    p.sendMessage("§cВы уже состоите в клане!");
-                    return true;
-                }
+                if (cp.getClanId() != null) { p.sendMessage("§cВы уже состоите в клане!"); return true; }
                 if (System.currentTimeMillis() - cp.getLastClanCreation() < 7 * 24 * 60 * 60 * 1000L) {
                     p.sendMessage("§cВы недавно создавали клан. Подождите 7 дней.");
                     return true;
                 }
-                if (args.length < 3) {
-                    p.sendMessage("§cИспользование: /clan create <Название> <Тэг>");
-                    return true;
-                }
+                if (args.length < 3) { p.sendMessage("§cИспользование: /clan create <Название> <Тэг>"); return true; }
                 String clanTag = args[2].toUpperCase();
                 if (clanTag.length() != 2 || !clanTag.matches("[A-Z]{2}")) {
                     p.sendMessage("§cТэг должен состоять из 2 английских букв.");
                     return true;
                 }
-                if (clans.containsKey(clanTag)) {
-                    p.sendMessage("§cЭтот тэг уже занят!");
-                    return true;
-                }
+                if (clans.containsKey(clanTag)) { p.sendMessage("§cЭтот тэг уже занят!"); return true; }
 
                 int baseCost = getConfig().getInt("economy.creation.base-cost", 2000);
                 int secretCost = getConfig().getInt("economy.creation.secret-cost", 500);
@@ -448,6 +451,23 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
                             OfflinePlayer op = Bukkit.getOfflinePlayer(m.getUuid());
                             p.sendMessage("§f" + (op.getName() != null ? op.getName() : "Unknown") + " §7- §e" + m.getContributedPoints() + " Очков");
                         });
+                break;
+
+            case "topclans":
+                p.sendMessage("§e--- Топ кланов по казне ---");
+                clans.values().stream()
+                        .sorted((a, b) -> Long.compare(b.getBankPoints(), a.getBankPoints()))
+                        .limit(10)
+                        .forEach(c -> p.sendMessage("§6" + c.getName() + " §7- §e" + c.getBankPoints() + " очков"));
+                break;
+
+            case "stats":
+                p.sendMessage("§e--- Ваша статистика ---");
+                p.sendMessage("§fЛичные очки: §6" + cp.getPersonalPoints());
+                p.sendMessage("§fОчки в казне клана: §6" + (cp.getClanId() != null ? clans.get(cp.getClanId()).getBankPoints() : 0));
+                p.sendMessage("§fВаш вклад: §6" + cp.getContributedPoints());
+                p.sendMessage("§fДневной лимит PvE: §6" + cp.getDailyPvEPoints() + "/" + getConfig().getInt("limits.daily-pve-points", 500));
+                p.sendMessage("§fДневной лимит PvP: §6" + cp.getDailyPvpPoints() + "/" + getConfig().getInt("limits.daily-pvp-points", 300));
                 break;
 
             case "info":
@@ -622,7 +642,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
                     npcManager.createNPC(npcName, npcType, p.getLocation());
                     p.sendMessage("§aNPC создан!");
                 } else {
-                    p.sendMessage("§cИспользование: /clan npc <имя> <тип: QUEST/UPGRADE/BANK>");
+                    p.sendMessage("§cИспользование: /clan npc <имя> <тип: QUEST/UPGRADE/BANK/SHOP>");
                 }
                 break;
 
@@ -654,6 +674,25 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
                 break;
         }
         return true;
+    }
+
+    private void sendHelp(Player p) {
+        p.sendMessage("§e=== КЛАНЫ: СЕЗОН 2 ===");
+        p.sendMessage("§f/clan create <Название> <Тэг> §7- создать клан (2 буквы)");
+        p.sendMessage("§f/clan invite <Ник> §7- пригласить игрока");
+        p.sendMessage("§f/clan confirm <Ник_лидера> §7- принять приглашение");
+        p.sendMessage("§f/clan exit §7- выйти из клана (штраф!)");
+        p.sendMessage("§f/clan chat §7- вкл/выкл клановый чат");
+        p.sendMessage("§f/clan top §7- топ вкладчиков");
+        p.sendMessage("§f/clan topclans §7- топ кланов");
+        p.sendMessage("§f/clan stats §7- ваша статистика");
+        p.sendMessage("§f/clan info §7- информация о клане");
+        p.sendMessage("§f/clan bank deposit <кол-во> §7- сдать личные очки в казну");
+        p.sendMessage("§f/clan spec <КЛАСС> §7- выбрать специализацию (лидер, ранг D+)");
+        p.sendMessage("§f/clan upgrade §7- меню улучшений клана");
+        p.sendMessage("§f/clan forge §7- сковать артефакт (Кузнецы)");
+        p.sendMessage("§f/clan radar §7- получить трекер (Контрабандисты)");
+        p.sendMessage("§f/clan nexus §7- получить сердце клана (лидер)");
     }
 
     // ==========================================
@@ -706,6 +745,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
         Player victim = event.getEntity();
         Player killer = victim.getKiller();
 
+        // Сохранение гильдейских артефактов
         List<ItemStack> saved = new ArrayList<>();
         Iterator<ItemStack> it = event.getDrops().iterator();
         while (it.hasNext()) {
@@ -717,6 +757,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
         }
         if (!saved.isEmpty()) soulboundItems.put(victim.getUniqueId(), saved);
 
+        // PvP очки
         if (killer != null && !killer.equals(victim)) {
             ClanPlayer vcp = getClanPlayer(victim.getUniqueId());
             ClanPlayer kcp = getClanPlayer(killer.getUniqueId());
@@ -814,7 +855,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
 
     @EventHandler
     public void onPrepareAnvil(PrepareAnvilEvent event) {
-        Player p = (Player) event.getView().getPlayer(); // исправлено приведение
+        Player p = (Player) event.getView().getPlayer();
         Clan clan = getClanPlayer(p.getUniqueId()).getClanId() != null ? clans.get(getClanPlayer(p.getUniqueId()).getClanId()) : null;
         GuildType type = clan != null ? clan.getGuildType() : GuildType.NONE;
         ItemStack slot2 = event.getInventory().getItem(1);
@@ -1096,6 +1137,9 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
                             break;
                         case "BANK":
                             player.sendMessage("§eБанк: используйте /clan bank deposit <кол-во>");
+                            break;
+                        case "SHOP":
+                            player.sendMessage("§eМагазин: скоро откроется!");
                             break;
                     }
                     event.setCancelled(true);
