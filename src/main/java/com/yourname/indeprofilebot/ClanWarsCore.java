@@ -21,7 +21,6 @@ import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.Sound;
-import org.bukkit.attribute.Attribute;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -593,6 +592,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
         if (type == GuildType.MAGE && slot2 != null && slot2.getType() != Material.ENCHANTED_BOOK) event.setResult(null);
     }
 
+    @SuppressWarnings("deprecation")
     private void applyGuildPassives(Player player) {
         ClanPlayer cp = getClanPlayer(player.getUniqueId());
         Clan clan = cp.getClanId() != null ? clans.get(cp.getClanId()) : null;
@@ -603,7 +603,9 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
         if (clan.getGuildType() == GuildType.SMUGGLER) baseHp = 18;
         
         double maxHp = baseHp + (cp.getMaxHealthLevel() * 2);
-        if (player.getAttribute(Attribute.MAX_HEALTH) != null) player.getAttribute(Attribute.MAX_HEALTH).setBaseValue(maxHp);
+        
+        // Устанавливаем здоровье надежным универсальным методом
+        player.setMaxHealth(maxHp);
 
         switch (clan.getGuildType()) {
             case ENGINEER: player.addPotionEffect(new PotionEffect(PotionEffectType.HASTE, 60, 0, false, false, false)); break;
