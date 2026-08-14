@@ -73,7 +73,6 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
     private final Map<UUID, Long> lastDailyReward = new ConcurrentHashMap<>();
     private final Map<UUID, Long> scrollCooldowns = new ConcurrentHashMap<>();
 
-    // ИСПРАВЛЕНИЕ: dirtyKey заменен на trackerKey
     private NamespacedKey trackerKey, guildItemKey, nexusKey, pawboxKey, scrollInfernoKey, scrollPlagueKey, c4Key;
 
     private File linkedFile;
@@ -155,7 +154,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
                     }
                 }
             }
-        }.runTaskTimer(this, 1200L, 1200L); // каждые минуту
+        }.runTaskTimer(this, 1200L, 1200L); // каждые минуту (1200 тиков = 60 сек)
 
         getLogger().info("ClanWars Season 2: Запущен!");
     }
@@ -254,7 +253,6 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
             event.setCancelled(true);
             Player p = (Player) event.getWhoClicked();
             
-            // ИСПРАВЛЕНИЕ: Защита от NullPointerException
             String clanId = getClanPlayer(p.getUniqueId()).getClanId();
             if (clanId == null || !clans.containsKey(clanId)) return;
             Clan clan = clans.get(clanId);
@@ -403,11 +401,11 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
             }
             scrollCooldowns.put(p.getUniqueId(), now);
             p.getWorld().playSound(p.getLocation(), Sound.ENTITY_WITCH_THROW, 1f, 1f);
-            p.getWorld().spawnParticle(Particle.SLIME, p.getLocation().add(0,1,0), 50, 0.5, 0.5, 0.5, 0.1);
+            // ИСПРАВЛЕНИЕ: SLIME заменен на DRAGON_BREATH
+            p.getWorld().spawnParticle(Particle.DRAGON_BREATH, p.getLocation().add(0,1,0), 50, 0.5, 0.5, 0.5, 0.1);
             for (Entity e : p.getNearbyEntities(7, 7, 7)) if (e instanceof LivingEntity && e != p) ((LivingEntity) e).addPotionEffect(new PotionEffect(PotionEffectType.POISON, 200, 1));
             p.sendMessage("§2Вы выпустили Чуму!");
         }
-        // ИСПРАВЛЕНИЕ: Используем правильный ключ trackerKey для трекера
         else if (item.getItemMeta().getPersistentDataContainer().has(trackerKey, PersistentDataType.BYTE)) {
             Player richest = null; int maxPts = 0;
             for (Player t : Bukkit.getOnlinePlayers()) {
@@ -547,7 +545,6 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
                 Player inviter = Bukkit.getPlayer(args[1]);
                 if (inviter == null) { p.sendMessage("§cЛидер не найден!"); return true; }
                 
-                // ИСПРАВЛЕНИЕ: Защита от NullPointerException
                 String inviteId = pendingInvites.get(p.getUniqueId());
                 if (inviteId == null) {
                     p.sendMessage("§cУ вас нет активных приглашений от этого лидера!");
@@ -757,7 +754,6 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
             case "radar":
                 if (cp.getClanId() != null && clans.get(cp.getClanId()).getGuildType() == GuildType.SMUGGLER && cp.getPersonalPoints() >= 100) {
                     cp.spendPersonalPoints(100);
-                    // ИСПРАВЛЕНИЕ: Используем правильный ключ trackerKey
                     p.getInventory().addItem(getCustomItem(Material.COMPASS, "§cТрекер Крови", trackerKey));
                     p.sendMessage("§aТрекер получен!");
                 } else {
@@ -1102,7 +1098,6 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
 
         double maxHp = baseHp + (cp.getMaxHealthLevel() * 2);
         
-        // ИСПРАВЛЕНИЕ: Меняем реальное здоровье, а не сжимаем интерфейс!
         player.setMaxHealth(maxHp);
 
         switch (clan.getGuildType()) {
