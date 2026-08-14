@@ -21,4 +21,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ClanWarsCore
-          path: target/*.jar # Теперь он точно найдет и скачает плагин!
+          path: target/*.jar 
