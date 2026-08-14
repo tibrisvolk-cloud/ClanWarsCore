@@ -1,6 +1,5 @@
 package com.yourname.indeprofilebot;
 
-import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.JDABuilder;
 import net.dv8tion.jda.api.Permission;
@@ -9,10 +8,10 @@ import net.dv8tion.jda.api.entities.Role;
 import net.dv8tion.jda.api.entities.User;
 import net.dv8tion.jda.api.entities.channel.concrete.Category;
 import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
-import net.dv8tion.jda.api.events.interaction.component.ButtonInteractionEvent;
+import net.dv8tion.jda.api.entities.channel.concrete.VoiceChannel;
+import net.dv8tion.jda.api.entities.channel.middleman.GuildChannel;
 import net.dv8tion.jda.api.events.message.MessageReceivedEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
-import net.dv8tion.jda.api.interactions.components.buttons.Button;
 import net.dv8tion.jda.api.requests.GatewayIntent;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
@@ -21,18 +20,16 @@ import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.Sound;
+import org.bukkit.World;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
-import org.bukkit.entity.Entity;
-import org.bukkit.entity.LivingEntity;
-import org.bukkit.entity.Player;
+import org.bukkit.entity.*;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
-import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
@@ -51,7 +48,6 @@ import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
 import org.bukkit.scheduler.BukkitRunnable;
 
-import java.awt.Color;
 import java.io.File;
 import java.io.IOException;
 import java.time.LocalDate;
@@ -68,24 +64,25 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
     private JDA jda;
     private final Map<String, String> linkCodes = new ConcurrentHashMap<>();
     private final Map<UUID, String> linkedAccounts = new ConcurrentHashMap<>();
-    private final Map<UUID, Long> sessions = new ConcurrentHashMap<>();
-    private final Map<UUID, PendingVerification> pendingVerifications = new ConcurrentHashMap<>();
-    private File linkedFile;
-    private FileConfiguration linkedConfig;
-
-    public final Map<UUID, ClanPlayer> players = new ConcurrentHashMap<>();
-    public final Map<String, Clan> clans = new ConcurrentHashMap<>();
     private final Map<UUID, List<ItemStack>> soulboundItems = new ConcurrentHashMap<>();
     private final Map<UUID, String> pendingInvites = new ConcurrentHashMap<>();
     private final Map<UUID, Long> radarCooldowns = new ConcurrentHashMap<>();
 
     private NamespacedKey dirtyKey, guildItemKey, nexusKey, pawboxKey, scrollInfernoKey, scrollPlagueKey, c4Key;
 
+    private File linkedFile;
+    private FileConfiguration linkedConfig;
+
+    public final Map<UUID, ClanPlayer> players = new ConcurrentHashMap<>();
+    public final Map<String, Clan> clans = new ConcurrentHashMap<>();
+
+    private NPCManager npcManager;
+
     @Override
     public void onEnable() {
         saveDefaultConfig();
         reloadConfig();
-        
+
         botToken = getConfig().getString("discord.bot-token");
         guildId = getConfig().getString("discord.guild-id");
 
@@ -103,8 +100,10 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
         if (botToken != null && !botToken.isEmpty() && !botToken.equals("ВСТАВЬТЕ_ТОКЕН_БОТА")) {
             Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
                 try {
-                    jda = JDABuilder.createDefault(botToken).enableIntents(GatewayIntent.MESSAGE_CONTENT, GatewayIntent.GUILD_MESSAGES)
-                            .addEventListeners(new DiscordListener()).build();
+                    jda = JDABuilder.createDefault(botToken)
+                            .enableIntents(GatewayIntent.MESSAGE_CONTENT, GatewayIntent.GUILD_MESSAGES)
+                            .addEventListeners(new DiscordListener())
+                            .build();
                     jda.awaitReady();
                 } catch (Exception ignored) {}
             });
@@ -113,13 +112,24 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
         getServer().getPluginManager().registerEvents(this, this);
         getCommand("clan").setExecutor(this);
 
+        // Инициализация NPC-менеджера
+        npcManager = new NPCManager(this);
+
+        // Пассивки для специализаций
         new BukkitRunnable() {
-            @Override public void run() { for (Player p : Bukkit.getOnlinePlayers()) applyGuildPassives(p); }
+            @Override
+            public void run() {
+                for (Player p : Bukkit.getOnlinePlayers()) applyGuildPassives(p);
+            }
         }.runTaskTimer(this, 20L, 20L);
 
+        // Автосохранение каждые 5 минут
         new BukkitRunnable() {
-            @Override public void run() { saveData(); }
-        }.runTaskTimer(this, 1200L, 1200L);
+            @Override
+            public void run() {
+                saveData();
+            }
+        }.runTaskTimerAsynchronously(this, 6000L, 6000L);
 
         getLogger().info("ClanWars Season 2: Запущен!");
     }
@@ -151,14 +161,14 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
                 Player mem = Bukkit.getPlayer(memId);
                 if (mem != null) mem.sendMessage(msg);
             }
-            
+
             if (jda != null && clan.getDiscordTextChannelId() != null) {
-                net.dv8tion.jda.api.entities.channel.middleman.MessageChannel channel = jda.getTextChannelById(clan.getDiscordTextChannelId());
+                TextChannel channel = jda.getTextChannelById(clan.getDiscordTextChannelId());
                 if (channel != null) channel.sendMessage("**" + p.getName() + "**: " + event.getMessage()).queue();
             }
         } else {
             if (clan != null) {
-                event.setFormat("§8[§e" + clan.getId() + " §8| §6" + clan.getRank().name() + "§8] §f%1$s §8» §7%2$s");
+                event.setFormat("§8[§e" + clan.getId() + " §8| §6" + clan.getRank().getDisplayName() + "§8] §f%1$s §8» §7%2$s");
             } else {
                 event.setFormat("§8[§7Без Клана§8] §f%1$s §8» §7%2$s");
             }
@@ -168,17 +178,20 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
     // ==========================================
     //           МЕНЮ УЛУЧШЕНИЙ (GUI)
     // ==========================================
-    private void openUpgradeMenu(Player player) {
+    public void openUpgradeMenu(Player player) {
         Clan clan = getClanPlayer(player.getUniqueId()).getClanId() != null ? clans.get(getClanPlayer(player.getUniqueId()).getClanId()) : null;
         if (clan == null) { player.sendMessage("§cВы не в клане!"); return; }
 
         Inventory inv = Bukkit.createInventory(null, 27, "§8Улучшения Клана");
-        inv.setItem(11, getCustomItem(Material.GOLDEN_APPLE, "§c❤ Улучшить Здоровье", null, "§7Цена: §e15,000 Очков", "§7Дает +1 сердце всему клану."));
-        
+        inv.setItem(11, getCustomItem(Material.GOLDEN_APPLE, "§c❤ Улучшить Здоровье", null,
+                "§7Цена: §e15,000 Очков", "§7Дает +1 сердце всему клану."));
+
         if (clan.getGuildType() == GuildType.MAGE) {
-            inv.setItem(15, getCustomItem(Material.PAPER, "§5Свитки Магии", null, "§7Цена: §e5,000 Очков", "§7Выдает Свиток Инферно и Чумы"));
+            inv.setItem(15, getCustomItem(Material.PAPER, "§5Свитки Магии", null,
+                    "§7Цена: §e5,000 Очков", "§7Выдает Свиток Инферно и Чумы"));
         } else if (clan.getGuildType() == GuildType.ENGINEER) {
-            inv.setItem(15, getCustomItem(Material.TNT, "§4Рейдовый заряд (C4)", null, "§7Цена: §e25,000 Очков", "§7Пробивает базу врагов"));
+            inv.setItem(15, getCustomItem(Material.TNT, "§4Рейдовый заряд (C4)", null,
+                    "§7Цена: §e25,000 Очков", "§7Пробивает базу врагов"));
         }
         player.openInventory(inv);
     }
@@ -197,8 +210,10 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
                 if (clan.getBankPoints() >= 15000) {
                     clan.addBankPoints(-15000);
                     for (UUID uid : clan.getMembers()) {
-                        ClanPlayer cp = getClanPlayer(uid); cp.setMaxHealthLevel(cp.getMaxHealthLevel() + 1);
-                        Player mem = Bukkit.getPlayer(uid); if (mem != null) applyGuildPassives(mem);
+                        ClanPlayer cp = getClanPlayer(uid);
+                        cp.setMaxHealthLevel(cp.getMaxHealthLevel() + 1);
+                        Player mem = Bukkit.getPlayer(uid);
+                        if (mem != null) applyGuildPassives(mem);
                     }
                     p.sendMessage("§aЗдоровье клана увеличено!");
                 } else p.sendMessage("§cНедостаточно Очков!");
@@ -234,17 +249,20 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
     @EventHandler
     public void onCustomItemUse(PlayerInteractEvent event) {
         if (event.getAction() != Action.RIGHT_CLICK_AIR && event.getAction() != Action.RIGHT_CLICK_BLOCK) return;
-        Player p = event.getPlayer(); ItemStack item = event.getItem();
+        Player p = event.getPlayer();
+        ItemStack item = event.getItem();
         if (item == null || !item.hasItemMeta()) return;
 
         if (item.getItemMeta().getPersistentDataContainer().has(scrollInfernoKey, PersistentDataType.BYTE)) {
-            event.setCancelled(true); item.setAmount(item.getAmount() - 1);
+            event.setCancelled(true);
+            item.setAmount(item.getAmount() - 1);
             p.getWorld().playSound(p.getLocation(), Sound.ENTITY_GHAST_SHOOT, 1f, 1f);
             for (Entity e : p.getNearbyEntities(7, 7, 7)) if (e instanceof LivingEntity && e != p) e.setFireTicks(200);
             p.sendMessage("§cВы активировали Инферно!");
         }
         else if (item.getItemMeta().getPersistentDataContainer().has(scrollPlagueKey, PersistentDataType.BYTE)) {
-            event.setCancelled(true); item.setAmount(item.getAmount() - 1);
+            event.setCancelled(true);
+            item.setAmount(item.getAmount() - 1);
             p.getWorld().playSound(p.getLocation(), Sound.ENTITY_WITCH_THROW, 1f, 1f);
             for (Entity e : p.getNearbyEntities(7, 7, 7)) if (e instanceof LivingEntity && e != p) ((LivingEntity) e).addPotionEffect(new PotionEffect(PotionEffectType.POISON, 200, 1));
             p.sendMessage("§2Вы выпустили Чуму!");
@@ -253,29 +271,33 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
             Player richest = null; int maxPts = 0;
             for (Player t : Bukkit.getOnlinePlayers()) {
                 if (t.equals(p)) continue;
-                int pts = countDirtyPoints(t);
+                int pts = getClanPlayer(t.getUniqueId()).getPersonalPoints();
                 if (pts > maxPts) { maxPts = pts; richest = t; }
             }
             if (richest != null) { p.setCompassTarget(richest.getLocation()); p.sendMessage("§cЦель: " + richest.getName()); }
         }
         else if (item.getItemMeta().getPersistentDataContainer().has(pawboxKey, PersistentDataType.BYTE)) {
-            event.setCancelled(true); item.setAmount(item.getAmount() - 1); openPawBox(p);
+            event.setCancelled(true);
+            item.setAmount(item.getAmount() - 1);
+            openPawBox(p);
         }
     }
 
     private void openPawBox(Player player) {
         player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1f, 1f);
         int roll = new Random().nextInt(100);
-        
-        if (roll < 20) { 
+
+        if (roll < 20) {
             ItemStack sword = new ItemStack(Material.NETHERITE_SWORD);
-            ItemMeta sm = sword.getItemMeta(); sm.setDisplayName("§6Клинок Падшего Короля"); sword.setItemMeta(sm);
-            markAsGuildItem(sword); 
+            ItemMeta sm = sword.getItemMeta();
+            sm.setDisplayName("§6Клинок Падшего Короля");
+            sword.setItemMeta(sm);
+            markAsGuildItem(sword);
             player.getInventory().addItem(sword);
             Bukkit.broadcastMessage("§e§l[PawBox] §fИгрок §6" + player.getName() + " §fвыбил Легендарный Артефакт!");
         } else if (roll < 60) {
-            player.getInventory().addItem(getDirtyPointItem(32));
-            player.sendMessage("§aВыбили кучу Грязных Очков! Бегите в Банк!");
+            grantPoints(player, 32);
+            player.sendMessage("§aВыбили 32 очка! Они автоматически разделены 50/50.");
         } else {
             player.getInventory().addItem(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 1));
             player.getInventory().addItem(new ItemStack(Material.ANCIENT_DEBRIS, 2));
@@ -292,25 +314,44 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
 
         if (args.length == 0) {
             p.sendMessage("§e=== КЛАНЫ: СЕЗОН 2 ===");
-            p.sendMessage("§f/clan create <ID> <Имя>, /clan invite <Ник>, /clan join <ID>");
-            p.sendMessage("§f/clan kick <Ник>, /clan leave, /clan disband");
-            p.sendMessage("§f/clan chat §7- Вкл/Выкл клановый чат");
-            p.sendMessage("§f/clan top §7- Топ контрибьюторов клана");
-            p.sendMessage("§f/clan spec <КЛАСС>, /clan upgrade, /clan bank deposit");
+            p.sendMessage("§f/clan create <Название> <Тэг> - создать клан (2 буквы)");
+            p.sendMessage("§f/clan invite <Ник> - пригласить игрока");
+            p.sendMessage("§f/clan confirm <Ник_лидера> - принять приглашение");
+            p.sendMessage("§f/clan exit - выйти из клана (штраф!)");
+            p.sendMessage("§f/clan chat - вкл/выкл клановый чат");
+            p.sendMessage("§f/clan top - топ вкладчиков");
+            p.sendMessage("§f/clan info - информация о клане");
+            p.sendMessage("§f/clan bank deposit <кол-во> - сдать личные очки в казну");
+            p.sendMessage("§f/clan spec <КЛАСС> - выбрать специализацию (лидер, ранг D+)");
+            p.sendMessage("§f/clan upgrade - меню улучшений клана");
+            p.sendMessage("§f/clan forge - сковать артефакт (Кузнецы)");
+            p.sendMessage("§f/clan radar - получить трекер (Контрабандисты)");
+            p.sendMessage("§f/clan nexus - получить сердце клана (лидер)");
             return true;
         }
 
         switch (args[0].toLowerCase()) {
             case "create":
-                if (cp.getClanId() != null) { 
-                    p.sendMessage("§cВы уже состоите в клане!"); return true; 
+                if (cp.getClanId() != null) {
+                    p.sendMessage("§cВы уже состоите в клане!");
+                    return true;
+                }
+                if (System.currentTimeMillis() - cp.getLastClanCreation() < 7 * 24 * 60 * 60 * 1000L) {
+                    p.sendMessage("§cВы недавно создавали клан. Подождите 7 дней.");
+                    return true;
                 }
                 if (args.length < 3) {
-                    p.sendMessage("§cИспользование: /clan create <ID> <Имя>"); return true;
+                    p.sendMessage("§cИспользование: /clan create <Название> <Тэг>");
+                    return true;
                 }
-                String clanId = args[1].toUpperCase();
-                if (clans.containsKey(clanId)) { 
-                    p.sendMessage("§cЭтот Тэг уже занят!"); return true; 
+                String clanTag = args[2].toUpperCase();
+                if (clanTag.length() != 2 || !clanTag.matches("[A-Z]{2}")) {
+                    p.sendMessage("§cТэг должен состоять из 2 английских букв.");
+                    return true;
+                }
+                if (clans.containsKey(clanTag)) {
+                    p.sendMessage("§cЭтот тэг уже занят!");
+                    return true;
                 }
 
                 int baseCost = getConfig().getInt("economy.creation.base-cost", 2000);
@@ -334,54 +375,73 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
                     } catch (Exception ignored) {}
                 }
 
-                if (countDirtyPoints(p) < finalCost) {
-                    p.sendMessage("§cДля создания клана нужно §e" + finalCost + " Грязных Очков§c в инвентаре!");
-                    if (!hasSecretRole) p.sendMessage("§7(Игрокам с ролью Secret создание обойдется всего в " + secretCost + " очков)");
+                if (cp.getPersonalPoints() < finalCost) {
+                    p.sendMessage("§cДля создания клана нужно §e" + finalCost + " очков§c на личном балансе!");
+                    if (!hasSecretRole) p.sendMessage("§7(С ролью Secret скидка до " + secretCost + ")");
                     return true;
                 }
 
-                consumeDirtyPoints(p, finalCost);
-                Clan newClan = new Clan(clanId, args[2], p.getUniqueId());
-                clans.put(clanId, newClan); 
-                cp.setClanId(clanId);
-                
-                p.sendMessage("§aКлан успешно создан за §e" + finalCost + " Грязных Очков§a!");
+                cp.spendPersonalPoints(finalCost);
+                cp.setLastClanCreation(System.currentTimeMillis());
+
+                Clan newClan = new Clan(clanTag, args[1], p.getUniqueId());
+                clans.put(clanTag, newClan);
+                cp.setClanId(clanTag);
+
+                p.sendMessage("§aКлан успешно создан за §e" + finalCost + " очков§a!");
                 if (hasSecretRole) p.sendMessage("§dПрименена скидка роли Secret!");
-                
+
                 if (jda != null) createDiscordRoleAndChannel(newClan, p);
                 break;
 
             case "invite":
-                if (cp.getClanId() == null) return true;
+                if (cp.getClanId() == null) { p.sendMessage("§cВы не в клане!"); return true; }
+                Clan invClan = clans.get(cp.getClanId());
+                if (!invClan.getLeader().equals(p.getUniqueId())) { p.sendMessage("§cТолько лидер может приглашать!"); return true; }
+                if (args.length < 2) { p.sendMessage("§cУкажите ник: /clan invite <ник>"); return true; }
                 Player target = Bukkit.getPlayer(args[1]);
-                if (target != null) {
-                    pendingInvites.put(target.getUniqueId(), cp.getClanId());
-                    p.sendMessage("§aПриглашение отправлено!");
-                    target.sendMessage("§eВас позвали в клан! Пиши: /clan join " + cp.getClanId());
+                if (target == null) { p.sendMessage("§cИгрок не найден!"); return true; }
+                if (invClan.getMembers().size() >= getConfig().getInt("clan.max-size", 5)) {
+                    p.sendMessage("§cКлан заполнен!");
+                    return true;
+                }
+                pendingInvites.put(target.getUniqueId(), invClan.getId());
+                p.sendMessage("§aПриглашение отправлено!");
+                target.sendMessage("§eВас пригласили в клан " + invClan.getName() + "! Введите §f/clan confirm " + p.getName() + "§e для вступления.");
+                break;
+
+            case "confirm":
+                if (cp.getClanId() != null) { p.sendMessage("§cВы уже в клане!"); return true; }
+                if (args.length < 2) { p.sendMessage("§cУкажите ник лидера: /clan confirm <ник>"); return true; }
+                Player inviter = Bukkit.getPlayer(args[1]);
+                if (inviter == null) { p.sendMessage("§cЛидер не найден!"); return true; }
+                Clan targetClan = clans.get(pendingInvites.get(p.getUniqueId()));
+                if (targetClan == null || !targetClan.getLeader().equals(inviter.getUniqueId())) {
+                    p.sendMessage("§cНет активного приглашения от этого лидера!");
+                    return true;
+                }
+                if (targetClan.getMembers().size() >= getConfig().getInt("clan.max-size", 5)) {
+                    p.sendMessage("§cКлан заполнен!");
+                    return true;
+                }
+                targetClan.getMembers().add(p.getUniqueId());
+                cp.setClanId(targetClan.getId());
+                pendingInvites.remove(p.getUniqueId());
+                p.sendMessage("§aВы вступили в клан " + targetClan.getName() + "!");
+                if (jda != null && targetClan.getDiscordRoleId() != null) {
+                    Guild g = jda.getGuildById(guildId);
+                    String dId = linkedAccounts.get(p.getUniqueId());
+                    if (g != null && dId != null) g.retrieveMemberById(dId).queue(m -> g.addRoleToMember(m, g.getRoleById(targetClan.getDiscordRoleId())).queue());
                 }
                 break;
-            case "join":
-                if (cp.getClanId() != null) return true;
-                String targetId = args[1].toUpperCase();
-                if (targetId.equals(pendingInvites.get(p.getUniqueId()))) {
-                    Clan jClan = clans.get(targetId);
-                    if (jClan.getMembers().size() >= 5) { p.sendMessage("§cКлан заполнен!"); return true; }
-                    jClan.getMembers().add(p.getUniqueId());
-                    cp.setClanId(targetId);
-                    p.sendMessage("§aВы вступили в клан!");
-                    if (jda != null && jClan.getDiscordRoleId() != null) {
-                        Guild g = jda.getGuildById(guildId);
-                        String dId = linkedAccounts.get(p.getUniqueId());
-                        if (g != null && dId != null) g.retrieveMemberById(dId).queue(m -> g.addRoleToMember(m, g.getRoleById(jClan.getDiscordRoleId())).queue());
-                    }
-                }
-                break;
+
             case "chat":
                 cp.setClanChatEnabled(!cp.isClanChatEnabled());
                 p.sendMessage(cp.isClanChatEnabled() ? "§aКлановый чат включен!" : "§eКлановый чат выключен.");
                 break;
+
             case "top":
-                if (cp.getClanId() == null) return true;
+                if (cp.getClanId() == null) { p.sendMessage("§cВы не в клане!"); return true; }
                 Clan tClan = clans.get(cp.getClanId());
                 p.sendMessage("§e--- Топ вкладчиков в казну ---");
                 tClan.getMembers().stream()
@@ -392,86 +452,208 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
                             p.sendMessage("§f" + (op.getName() != null ? op.getName() : "Unknown") + " §7- §e" + m.getContributedPoints() + " Очков");
                         });
                 break;
-            case "kick":
-                if (cp.getClanId() == null) return true;
-                Clan kClan = clans.get(cp.getClanId());
-                if (!kClan.getLeader().equals(p.getUniqueId())) { p.sendMessage("§cТолько лидер может выгонять!"); return true; }
-                OfflinePlayer kTarget = Bukkit.getOfflinePlayer(args[1]);
-                if (kClan.getMembers().contains(kTarget.getUniqueId()) && !kTarget.getUniqueId().equals(p.getUniqueId())) {
-                    kClan.getMembers().remove(kTarget.getUniqueId());
-                    ClanPlayer kcp = getClanPlayer(kTarget.getUniqueId());
-                    kcp.setClanId(null); kcp.setMaxHealthLevel(0);
-                    removeDiscordRole(kTarget.getUniqueId(), kClan.getDiscordRoleId());
-                    p.sendMessage("§aИгрок изгнан!");
+
+            case "info":
+                Clan infoClan = cp.getClanId() != null ? clans.get(cp.getClanId()) : null;
+                if (infoClan == null) { p.sendMessage("§cВы не в клане!"); return true; }
+                p.sendMessage("§e=== Информация о клане ===");
+                p.sendMessage("§fНазвание: §b" + infoClan.getName());
+                p.sendMessage("§fТэг: §b" + infoClan.getId());
+                p.sendMessage("§fРанг: §6" + infoClan.getRank().getDisplayName());
+                p.sendMessage("§fСпециализация: §d" + infoClan.getGuildType().getDisplayName());
+                p.sendMessage("§fКазна: §e" + infoClan.getBankPoints() + " очков");
+                p.sendMessage("§fСостав (" + infoClan.getMembers().size() + "/5):");
+                for (UUID uid : infoClan.getMembers()) {
+                    OfflinePlayer op = Bukkit.getOfflinePlayer(uid);
+                    p.sendMessage("  §7- " + (op.getName() != null ? op.getName() : "Unknown"));
                 }
                 break;
-            case "leave":
-                if (cp.getClanId() == null) return true;
+
+            case "kick":
+                if (cp.getClanId() == null) { p.sendMessage("§cВы не в клане!"); return true; }
+                Clan kClan = clans.get(cp.getClanId());
+                if (!kClan.getLeader().equals(p.getUniqueId())) { p.sendMessage("§cТолько лидер может выгонять!"); return true; }
+                if (args.length < 2) { p.sendMessage("§cУкажите ник: /clan kick <ник>"); return true; }
+                OfflinePlayer kTarget = Bukkit.getOfflinePlayer(args[1]);
+                if (kTarget == null || !kClan.getMembers().contains(kTarget.getUniqueId()) || kTarget.getUniqueId().equals(p.getUniqueId())) {
+                    p.sendMessage("§cИгрок не найден в клане или это вы!");
+                    return true;
+                }
+                kClan.getMembers().remove(kTarget.getUniqueId());
+                ClanPlayer kcp = getClanPlayer(kTarget.getUniqueId());
+                kcp.setClanId(null);
+                kcp.setMaxHealthLevel(0);
+                removeDiscordRole(kTarget.getUniqueId(), kClan.getDiscordRoleId());
+                Player onlineKick = Bukkit.getPlayer(kTarget.getUniqueId());
+                if (onlineKick != null) {
+                    onlineKick.setHealth(0);
+                    onlineKick.sendMessage("§cВы были изгнаны из клана!");
+                }
+                p.sendMessage("§aИгрок изгнан!");
+                break;
+
+            case "exit":
+                if (cp.getClanId() == null) { p.sendMessage("§cВы не в клане!"); return true; }
                 Clan lClan = clans.get(cp.getClanId());
-                if (lClan.getLeader().equals(p.getUniqueId())) { p.sendMessage("§cЛидер не может выйти! Сделай disband."); return true; }
-                lClan.getMembers().remove(p.getUniqueId()); cp.setClanId(null); cp.setMaxHealthLevel(0);
+                if (lClan.getLeader().equals(p.getUniqueId())) {
+                    p.sendMessage("§cЛидер не может выйти! Используйте /clan disband.");
+                    return true;
+                }
+                if (lClan.getGuildType() != GuildType.NONE) {
+                    cp.setMaxHealthLevel(0);
+                    p.sendMessage("§cВы потеряли все улучшения, купленные за клановые очки!");
+                }
+                lClan.getMembers().remove(p.getUniqueId());
+                cp.setClanId(null);
+                cp.setLastClanExit(System.currentTimeMillis());
                 removeDiscordRole(p.getUniqueId(), lClan.getDiscordRoleId());
                 p.setHealth(0);
-                p.sendMessage("§cВы покинули клан! Навыки сброшены.");
+                p.sendMessage("§cВы покинули клан! Вступать в другой можно через 24 часа.");
                 break;
+
             case "disband":
-                if (cp.getClanId() == null) return true;
+                if (cp.getClanId() == null) { p.sendMessage("§cВы не в клане!"); return true; }
                 Clan dClan = clans.get(cp.getClanId());
-                if (!dClan.getLeader().equals(p.getUniqueId())) return true;
+                if (!dClan.getLeader().equals(p.getUniqueId())) { p.sendMessage("§cТолько лидер может расформировать клан!"); return true; }
+                if (dClan.getBankPoints() > getConfig().getInt("anti-abuse.max-bank-for-disband", 50000)) {
+                    p.sendMessage("§cНельзя распустить клан с казной более " + getConfig().getInt("anti-abuse.max-bank-for-disband", 50000) + " очков.");
+                    return true;
+                }
                 for (UUID mId : dClan.getMembers()) {
-                    ClanPlayer mcp = getClanPlayer(mId); mcp.setClanId(null); mcp.setMaxHealthLevel(0);
+                    ClanPlayer mcp = getClanPlayer(mId);
+                    mcp.setClanId(null);
+                    mcp.setMaxHealthLevel(0);
                     removeDiscordRole(mId, dClan.getDiscordRoleId());
+                    if (mcp.getUuid().equals(p.getUniqueId())) {
+                        mcp.setLastClanCreation(System.currentTimeMillis());
+                    }
                 }
                 deleteDiscordClanSetup(dClan);
                 clans.remove(dClan.getId());
                 p.sendMessage("§cКлан распущен!");
                 break;
+
             case "spec":
-                if (cp.getClanId() == null) return true;
+                if (cp.getClanId() == null) { p.sendMessage("§cВы не в клане!"); return true; }
                 Clan specClan = clans.get(cp.getClanId());
-                if (!specClan.getLeader().equals(p.getUniqueId()) || specClan.getRank().ordinal() < ClanRank.D.ordinal() || specClan.getGuildType() != GuildType.NONE) {
-                    p.sendMessage("§cДоступно лидеру, Ранг D+, только 1 раз!"); return true;
+                if (!specClan.getLeader().equals(p.getUniqueId())) { p.sendMessage("§cТолько лидер выбирает специализацию!"); return true; }
+                if (specClan.getRank().ordinal() < ClanRank.D.ordinal()) {
+                    p.sendMessage("§cНужен ранг D или выше для выбора специализации!");
+                    return true;
                 }
+                if (specClan.getGuildType() != GuildType.NONE) {
+                    p.sendMessage("§cСпециализация уже выбрана и не может быть изменена!");
+                    return true;
+                }
+                if (args.length < 2) { p.sendMessage("§cУкажите: BLACKSMITH, MAGE, ENGINEER, SMUGGLER"); return true; }
                 try {
                     GuildType type = GuildType.valueOf(args[1].toUpperCase());
                     specClan.setGuildType(type);
-                    Bukkit.broadcastMessage("§e§l[КЛАНЫ] §fКлан §6" + specClan.getName() + " §fвыбрал путь: §b" + type.getDisplayName());
-                } catch (Exception e) { p.sendMessage("§cMAGE, BLACKSMITH, ENGINEER, SMUGGLER"); }
-                break;
-            case "upgrade": openUpgradeMenu(p); break;
-            case "bank":
-                if (args.length > 1 && args[1].equalsIgnoreCase("deposit") && cp.getClanId() != null) {
-                    int amt = consumeDirtyPoints(p, Integer.MAX_VALUE);
-                    if (amt > 0) { 
-                        clans.get(cp.getClanId()).addBankPoints(amt); 
-                        cp.addContributedPoints(amt);
-                        p.sendMessage("§aСдано §e" + amt + " §aОчков!"); 
-                        checkRankUp(clans.get(cp.getClanId()));
-                    }
+                    Bukkit.broadcastMessage("§e§l[КЛАНЫ] §fКлан §6" + specClan.getName() + " §fвыбрал специализацию: §b" + type.getDisplayName());
+                } catch (Exception e) {
+                    p.sendMessage("§cДоступные: BLACKSMITH, MAGE, ENGINEER, SMUGGLER");
                 }
                 break;
+
+            case "upgrade":
+                openUpgradeMenu(p);
+                break;
+
+            case "bank":
+                if (args.length > 1 && args[1].equalsIgnoreCase("deposit") && cp.getClanId() != null) {
+                    if (args.length < 3) { p.sendMessage("§cУкажите количество: /clan bank deposit <кол-во>"); return true; }
+                    try {
+                        int amt = Integer.parseInt(args[2]);
+                        if (amt <= 0) { p.sendMessage("§cЧисло должно быть положительным!"); return true; }
+                        if (cp.getPersonalPoints() < amt) { p.sendMessage("§cУ вас недостаточно личных очков!"); return true; }
+                        cp.spendPersonalPoints(amt);
+                        clans.get(cp.getClanId()).addBankPoints(amt);
+                        cp.addContributedPoints(amt);
+                        p.sendMessage("§aСдано §e" + amt + " §aочков в казну!");
+                        checkRankUp(clans.get(cp.getClanId()));
+                    } catch (NumberFormatException e) {
+                        p.sendMessage("§cВведите число!");
+                    }
+                } else {
+                    p.sendMessage("§cИспользование: /clan bank deposit <кол-во>");
+                }
+                break;
+
             case "forge":
                 if (cp.getClanId() != null && clans.get(cp.getClanId()).getGuildType() == GuildType.BLACKSMITH) {
                     ItemStack hand = p.getInventory().getItemInMainHand();
-                    if (hand.getType() != Material.AIR && countDirtyPoints(p) >= 500) {
-                        consumeDirtyPoints(p, 500);
-                        ItemMeta m = hand.getItemMeta(); m.setUnbreakable(true); hand.setItemMeta(m); markAsGuildItem(hand);
+                    if (hand.getType() != Material.AIR && cp.getPersonalPoints() >= 500) {
+                        cp.spendPersonalPoints(500);
+                        ItemMeta m = hand.getItemMeta();
+                        m.setUnbreakable(true);
+                        hand.setItemMeta(m);
+                        markAsGuildItem(hand);
                         p.sendMessage("§aАртефакт скован!");
+                    } else {
+                        p.sendMessage("§cНужен предмет в руке и 500 личных очков!");
                     }
+                } else {
+                    p.sendMessage("§cДоступно только клану Кузнецов!");
                 }
                 break;
+
             case "radar":
-                if (cp.getClanId() != null && clans.get(cp.getClanId()).getGuildType() == GuildType.SMUGGLER && countDirtyPoints(p) >= 100) {
-                    consumeDirtyPoints(p, 100); p.getInventory().addItem(getCustomItem(Material.COMPASS, "§cТрекер Крови", dirtyKey));
+                if (cp.getClanId() != null && clans.get(cp.getClanId()).getGuildType() == GuildType.SMUGGLER && cp.getPersonalPoints() >= 100) {
+                    cp.spendPersonalPoints(100);
+                    p.getInventory().addItem(getCustomItem(Material.COMPASS, "§cТрекер Крови", dirtyKey));
+                    p.sendMessage("§aТрекер получен!");
+                } else {
+                    p.sendMessage("§cДоступно только Контрабандистам и стоит 100 личных очков.");
                 }
                 break;
+
             case "nexus":
                 if (cp.getClanId() != null && clans.get(cp.getClanId()).getLeader().equals(p.getUniqueId())) {
                     p.getInventory().addItem(getCustomItem(Material.BEACON, "§d§lСердце Клана", nexusKey));
+                    p.sendMessage("§aСердце клана выдано!");
                 }
                 break;
-            case "pawbox": 
+
+            case "pawbox":
                 if (p.isOp()) p.getInventory().addItem(getCustomItem(Material.CHEST, "§e§lPawBox 2.0", pawboxKey));
+                break;
+
+            case "npc":
+                if (p.isOp() && args.length >= 3) {
+                    String npcName = args[1];
+                    String npcType = args[2].toUpperCase();
+                    npcManager.createNPC(npcName, npcType, p.getLocation());
+                    p.sendMessage("§aNPC создан!");
+                } else {
+                    p.sendMessage("§cИспользование: /clan npc <имя> <тип: QUEST/UPGRADE/BANK>");
+                }
+                break;
+
+            case "addpoints":
+                if (p.isOp() && args.length >= 3) {
+                    Player targetAdd = Bukkit.getPlayer(args[1]);
+                    if (targetAdd != null) {
+                        try {
+                            int amt = Integer.parseInt(args[2]);
+                            grantPoints(targetAdd, amt);
+                            p.sendMessage("§aВыдано " + amt + " очков игроку " + targetAdd.getName());
+                        } catch (NumberFormatException ignored) {}
+                    }
+                }
+                break;
+
+            case "setrank":
+                if (p.isOp() && args.length >= 3) {
+                    Clan setClan = clans.get(args[1].toUpperCase());
+                    if (setClan != null) {
+                        try {
+                            setClan.setRank(ClanRank.valueOf(args[2].toUpperCase()));
+                            p.sendMessage("§aРанг клана " + setClan.getId() + " установлен на " + setClan.getRank().getDisplayName());
+                        } catch (Exception e) {
+                            p.sendMessage("§cНеверный ранг");
+                        }
+                    } else p.sendMessage("§cКлан не найден");
+                }
                 break;
         }
         return true;
@@ -482,60 +664,98 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
     // ==========================================
     @EventHandler
     public void onEntityDeath(EntityDeathEvent event) {
-        if (event.getEntity().getKiller() != null && Math.random() > 0.5) {
-            Player killer = event.getEntity().getKiller();
-            ClanPlayer cp = getClanPlayer(killer.getUniqueId());
-            
-            int limit = getConfig().getInt("limits.daily-pve-points", 500);
-            String today = LocalDate.now().toString();
-            if (!today.equals(cp.getLastFarmDate())) {
-                cp.setLastFarmDate(today);
-                cp.setDailyPvEPoints(0);
-            }
+        if (event.getEntity().getKiller() == null) return;
+        Player killer = event.getEntity().getKiller();
+        ClanPlayer cp = getClanPlayer(killer.getUniqueId());
 
-            if (cp.getDailyPvEPoints() < limit) {
-                cp.setDailyPvEPoints(cp.getDailyPvEPoints() + 1);
-                event.getDrops().add(getCustomItem(Material.GOLD_NUGGET, "§6Осколок Влияния", dirtyKey));
+        // Проверяем, является ли моб "особым"
+        if (!isSpecialMob(event.getEntity())) return;
+
+        int limit = getConfig().getInt("limits.daily-pve-points", 500);
+
+        String today = LocalDate.now().toString();
+        if (!today.equals(cp.getLastFarmDate())) {
+            cp.setLastFarmDate(today);
+            cp.setDailyPvEPoints(0);
+        }
+
+        if (cp.getDailyPvEPoints() < limit) {
+            cp.setDailyPvEPoints(cp.getDailyPvEPoints() + 1);
+            int points = getPointsForMob(event.getEntity().getType());
+            grantPoints(killer, points);
+        }
+    }
+
+    private boolean isSpecialMob(Entity entity) {
+        List<String> allowedTypes = getConfig().getStringList("special-mobs.types");
+        if (allowedTypes.contains(entity.getType().name())) return true;
+
+        if (getConfig().getBoolean("special-mobs.require-custom-name", false)) {
+            if (entity.getCustomName() != null && entity.getCustomName().equals(getConfig().getString("special-mobs.custom-name", "§6Элитный моб"))) {
+                return true;
             }
         }
+        return false;
+    }
+
+    private int getPointsForMob(EntityType type) {
+        return getConfig().getInt("special-mobs.base-points", 15);
     }
 
     @EventHandler
     public void onPlayerDeath(PlayerDeathEvent event) {
         Player victim = event.getEntity();
         Player killer = victim.getKiller();
-        
+
+        // Сохранение гильдейских артефактов
         List<ItemStack> saved = new ArrayList<>();
         Iterator<ItemStack> it = event.getDrops().iterator();
         while (it.hasNext()) {
             ItemStack drop = it.next();
             if (drop.hasItemMeta() && drop.getItemMeta().getPersistentDataContainer().has(guildItemKey, PersistentDataType.BYTE)) {
-                saved.add(drop); it.remove();
+                saved.add(drop);
+                it.remove();
             }
         }
         if (!saved.isEmpty()) soulboundItems.put(victim.getUniqueId(), saved);
 
-        int pts = 0;
-        it = event.getDrops().iterator();
-        while (it.hasNext()) {
-            ItemStack drop = it.next();
-            if (drop.hasItemMeta() && drop.getItemMeta().getPersistentDataContainer().has(dirtyKey, PersistentDataType.BYTE)) {
-                pts += drop.getAmount(); it.remove();
-            }
-        }
+        // PvP очки
+        if (killer != null && !killer.equals(victim)) {
+            ClanPlayer vcp = getClanPlayer(victim.getUniqueId());
+            ClanPlayer kcp = getClanPlayer(killer.getUniqueId());
 
-        if (pts > 0) {
-            if (killer != null) {
-                int vRank = getClanPlayer(victim.getUniqueId()).getClanId() != null ? clans.get(getClanPlayer(victim.getUniqueId()).getClanId()).getRank().ordinal() : -1;
-                int kRank = getClanPlayer(killer.getUniqueId()).getClanId() != null ? clans.get(getClanPlayer(killer.getUniqueId()).getClanId()).getRank().ordinal() : -1;
-
-                if (kRank > vRank + 1) pts = 0; // Штраф за убийство слабого
-                else if (vRank > kRank + 1) pts = (int)(pts * 1.5);
+            String today = LocalDate.now().toString();
+            if (!today.equals(kcp.getLastPvpDate())) {
+                kcp.setLastPvpDate(today);
+                kcp.setDailyPvpPoints(0);
             }
-            while (pts > 0) {
-                int stack = Math.min(pts, 16);
-                event.getDrops().add(getCustomItem(Material.GOLD_NUGGET, "§6Осколок Влияния", dirtyKey));
-                pts -= stack;
+            int pvpLimit = getConfig().getInt("limits.daily-pvp-points", 300);
+            if (kcp.getDailyPvpPoints() >= pvpLimit) return;
+
+            Clan vClan = vcp.getClanId() != null ? clans.get(vcp.getClanId()) : null;
+            Clan kClan = kcp.getClanId() != null ? clans.get(kcp.getClanId()) : null;
+
+            int points = 50;
+
+            int vRank = vClan != null ? vClan.getRank().ordinal() : -1;
+            int kRank = kClan != null ? kClan.getRank().ordinal() : -1;
+
+            if (vRank >= 0 && kRank >= 0) {
+                int diff = vRank - kRank;
+                if (diff > 0) {
+                    points *= Math.min(1 + 0.25 * diff, 3.0);
+                } else if (diff < 0) {
+                    points *= Math.max(1 - 0.5 * Math.abs(diff), 0);
+                }
+            } else if (vRank < 0 && kRank >= 0) {
+                points = (int)(points * 0.5);
+            } else if (vRank >= 0 && kRank < 0) {
+                // полные очки
+            }
+
+            if (points > 0) {
+                grantPoints(killer, points);
+                kcp.setDailyPvpPoints(kcp.getDailyPvpPoints() + points);
             }
         }
     }
@@ -547,6 +767,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
             for (ItemStack i : soulboundItems.get(u)) event.getPlayer().getInventory().addItem(i);
             soulboundItems.remove(u);
         }
+        applyGuildPassives(event.getPlayer());
     }
 
     @EventHandler
@@ -563,55 +784,97 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
                 if (c.getNexusLocation() != null && c.getNexusLocation().distance(event.getBlock().getLocation()) < 10 && !c.getMembers().contains(p.getUniqueId())) {
                     c.addBankPoints(-1000);
                     Bukkit.broadcastMessage("§4ВНИМАНИЕ! База клана " + c.getName() + " подрывается C4!");
-                    if (c.getBankPoints() < 0) { c.setBankPoints(0); c.setNexusLocation(null); Bukkit.broadcastMessage("§c§lСЕРДЦЕ КЛАНА УНИЧТОЖЕНО!"); }
+                    if (c.getBankPoints() < 0) {
+                        c.setBankPoints(0);
+                        c.setNexusLocation(null);
+                        Bukkit.broadcastMessage("§c§lСЕРДЦЕ КЛАНА УНИЧТОЖЕНО!");
+                    }
                 }
             }
         }
     }
 
     // ==========================================
-    //           МОНОПОЛИИ (Анти-Абуз)
+    //           МОНОПОЛИИ (Ограничения по специализациям)
     // ==========================================
     @EventHandler
     public void onInventoryOpen(InventoryOpenEvent event) {
-        Clan clan = clans.get(getClanPlayer(event.getPlayer().getUniqueId()).getClanId());
+        Player p = (Player) event.getPlayer();
+        Clan clan = getClanPlayer(p.getUniqueId()).getClanId() != null ? clans.get(getClanPlayer(p.getUniqueId()).getClanId()) : null;
         GuildType type = clan != null ? clan.getGuildType() : GuildType.NONE;
 
-        if (event.getInventory().getType() == InventoryType.BREWING && type != GuildType.MAGE) event.setCancelled(true);
-        if (event.getInventory().getType() == InventoryType.ANVIL && type != GuildType.BLACKSMITH && type != GuildType.MAGE) event.setCancelled(true);
-        if (event.getInventory().getType() == InventoryType.SMITHING && type != GuildType.BLACKSMITH) event.setCancelled(true);
+        if (event.getInventory().getType() == InventoryType.BREWING && type != GuildType.MAGE) {
+            event.setCancelled(true);
+            p.sendMessage("§cТолько Маги могут использовать зельеварение!");
+        }
+        if (event.getInventory().getType() == InventoryType.ANVIL && type != GuildType.BLACKSMITH && type != GuildType.MAGE) {
+            event.setCancelled(true);
+            p.sendMessage("§cТолько Кузнецы и Маги могут использовать наковальню!");
+        }
+        if (event.getInventory().getType() == InventoryType.SMITHING && type != GuildType.BLACKSMITH) {
+            event.setCancelled(true);
+            p.sendMessage("§cТолько Кузнецы могут использовать кузницу!");
+        }
     }
 
     @EventHandler
     public void onPrepareAnvil(PrepareAnvilEvent event) {
-        Clan clan = clans.get(getClanPlayer(event.getView().getPlayer().getUniqueId()).getClanId());
+        Player p = event.getView().getPlayer();
+        Clan clan = getClanPlayer(p.getUniqueId()).getClanId() != null ? clans.get(getClanPlayer(p.getUniqueId()).getClanId()) : null;
         GuildType type = clan != null ? clan.getGuildType() : GuildType.NONE;
         ItemStack slot2 = event.getInventory().getItem(1);
 
-        if (type == GuildType.BLACKSMITH && slot2 != null && slot2.getType() == Material.ENCHANTED_BOOK) event.setResult(null);
-        if (type == GuildType.MAGE && slot2 != null && slot2.getType() != Material.ENCHANTED_BOOK) event.setResult(null);
+        if (type == GuildType.BLACKSMITH && slot2 != null && slot2.getType() == Material.ENCHANTED_BOOK) {
+            event.setResult(null);
+        }
+        if (type == GuildType.MAGE && slot2 != null && slot2.getType() != Material.ENCHANTED_BOOK) {
+            event.setResult(null);
+        }
     }
 
-    @SuppressWarnings("deprecation")
+    // ==========================================
+    //           ПАССИВНЫЕ ЭФФЕКТЫ СПЕЦИАЛИЗАЦИЙ
+    // ==========================================
     private void applyGuildPassives(Player player) {
         ClanPlayer cp = getClanPlayer(player.getUniqueId());
         Clan clan = cp.getClanId() != null ? clans.get(cp.getClanId()) : null;
         if (clan == null) return;
 
         double baseHp = 20;
-        if (clan.getGuildType() == GuildType.MAGE) baseHp = 16;
-        if (clan.getGuildType() == GuildType.SMUGGLER) baseHp = 18;
-        
+        switch (clan.getGuildType()) {
+            case MAGE:
+                baseHp = 16;
+                break;
+            case BLACKSMITH:
+                baseHp = 22;
+                break;
+            case ENGINEER:
+                baseHp = 20;
+                break;
+            case SMUGGLER:
+                baseHp = 18;
+                break;
+            default:
+                baseHp = 20;
+        }
+
         double maxHp = baseHp + (cp.getMaxHealthLevel() * 2);
-        
-        // Устанавливаем здоровье надежным универсальным методом
-        player.setMaxHealth(maxHp);
+        player.setHealthScale(maxHp / 20.0);
+        player.setHealthScaled(true);
 
         switch (clan.getGuildType()) {
-            case ENGINEER: player.addPotionEffect(new PotionEffect(PotionEffectType.HASTE, 60, 0, false, false, false)); break;
-            case SMUGGLER: player.addPotionEffect(new PotionEffect(PotionEffectType.SPEED, 60, 0, false, false, false)); break;
-            case MAGE: player.addPotionEffect(new PotionEffect(PotionEffectType.REGENERATION, 60, 0, false, false, false)); break;
-            case BLACKSMITH: player.addPotionEffect(new PotionEffect(PotionEffectType.FIRE_RESISTANCE, 60, 0, false, false, false)); break;
+            case BLACKSMITH:
+                player.addPotionEffect(new PotionEffect(PotionEffectType.FIRE_RESISTANCE, 60, 0, false, false, false));
+                break;
+            case MAGE:
+                player.addPotionEffect(new PotionEffect(PotionEffectType.REGENERATION, 60, 0, false, false, false));
+                break;
+            case ENGINEER:
+                player.addPotionEffect(new PotionEffect(PotionEffectType.HASTE, 60, 0, false, false, false));
+                break;
+            case SMUGGLER:
+                player.addPotionEffect(new PotionEffect(PotionEffectType.SPEED, 60, 0, false, false, false));
+                break;
         }
     }
 
@@ -619,7 +882,38 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
     public void onFallDamage(EntityDamageEvent event) {
         if (event.getEntity() instanceof Player p && event.getCause() == EntityDamageEvent.DamageCause.FALL) {
             Clan clan = clans.get(getClanPlayer(p.getUniqueId()).getClanId());
-            if (clan != null && clan.getGuildType() == GuildType.SMUGGLER) event.setCancelled(true);
+            if (clan != null && clan.getGuildType() == GuildType.SMUGGLER) {
+                event.setCancelled(true);
+            }
+        }
+    }
+
+    // ==========================================
+    //           ЭКОНОМИКА: НАЧИСЛЕНИЕ ОЧКОВ
+    // ==========================================
+    public void grantPoints(Player player, int amount) {
+        if (amount <= 0) return;
+        ClanPlayer cp = getClanPlayer(player.getUniqueId());
+        int personal = amount / 2;
+        int clanPart = amount - personal;
+
+        cp.addPersonalPoints(personal);
+        if (cp.getClanId() != null) {
+            Clan clan = clans.get(cp.getClanId());
+            clan.addBankPoints(clanPart);
+            cp.addContributedPoints(clanPart);
+            checkRankUp(clan);
+        } else {
+            cp.addPersonalPoints(clanPart);
+        }
+    }
+
+    private void checkRankUp(Clan clan) {
+        for (ClanRank rank : ClanRank.values()) {
+            if (clan.getRank().ordinal() < rank.ordinal() && clan.getBankPoints() >= rank.getRequiredPoints()) {
+                clan.setRank(rank);
+                Bukkit.broadcastMessage("§e§l[КЛАНЫ] §fКлан §6" + clan.getName() + " §fапнул Ранг §b" + rank.getDisplayName() + "§f!");
+            }
         }
     }
 
@@ -637,17 +931,24 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
         if (jda == null || guildId == null) return;
         Guild g = jda.getGuildById(guildId);
         if (g != null) {
-            if (clan.getDiscordRoleId() != null) { Role r = g.getRoleById(clan.getDiscordRoleId()); if (r != null) r.delete().queue(); }
+            if (clan.getDiscordRoleId() != null) {
+                Role r = g.getRoleById(clan.getDiscordRoleId());
+                if (r != null) r.delete().queue();
+            }
             if (clan.getDiscordTextChannelId() != null) {
                 TextChannel tc = g.getTextChannelById(clan.getDiscordTextChannelId());
                 if (tc != null) {
                     Category cat = tc.getParentCategory();
                     tc.delete().queue();
                     if (cat != null) {
-                        for (net.dv8tion.jda.api.entities.channel.middleman.GuildChannel gc : cat.getChannels()) gc.delete().queue();
+                        for (GuildChannel gc : cat.getChannels()) gc.delete().queue();
                         cat.delete().queue();
                     }
                 }
+            }
+            if (clan.getDiscordVoiceChannelId() != null) {
+                VoiceChannel vc = g.getVoiceChannelById(clan.getDiscordVoiceChannelId());
+                if (vc != null) vc.delete().queue();
             }
         }
     }
@@ -662,6 +963,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
                 if (dId != null) guild.retrieveMemberById(dId).queue(m -> guild.addRoleToMember(m, role).queue());
                 guild.createCategory("🛡️ " + clan.getName()).queue(cat -> {
                     cat.createTextChannel("штаб").queue(txt -> clan.setDiscordTextChannelId(txt.getId()));
+                    cat.createVoiceChannel("голосовой").queue(vc -> clan.setDiscordVoiceChannelId(vc.getId()));
                 });
             });
         }
@@ -672,7 +974,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
         public void onMessageReceived(MessageReceivedEvent event) {
             if (event.getAuthor().isBot()) return;
             String msg = event.getMessage().getContentRaw();
-            
+
             if (msg.startsWith("!link ")) {
                 String code = msg.substring(6).trim();
                 String uuidStr = linkCodes.remove(code);
@@ -691,8 +993,42 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
                 for (Clan c : clans.values()) {
                     if (chId.equals(c.getDiscordTextChannelId())) {
                         String mcMsg = "§9[DS] §b[Клан] §f" + event.getAuthor().getName() + " §8» §7" + event.getMessage().getContentDisplay();
-                        for (UUID memId : c.getMembers()) { Player m = Bukkit.getPlayer(memId); if (m != null) m.sendMessage(mcMsg); }
+                        for (UUID memId : c.getMembers()) {
+                            Player m = Bukkit.getPlayer(memId);
+                            if (m != null) m.sendMessage(mcMsg);
+                        }
                         break;
+                    }
+                }
+
+                if (msg.startsWith("!clan info")) {
+                    String discordId = event.getAuthor().getId();
+                    for (Clan c : clans.values()) {
+                        if (c.getDiscordRoleId() != null) {
+                            Role r = event.getGuild().getRoleById(c.getDiscordRoleId());
+                            if (r != null && event.getMember() != null && event.getMember().getRoles().contains(r)) {
+                                event.getChannel().sendMessage("**" + c.getName() + "** | Ранг: " + c.getRank().getDisplayName() +
+                                        " | Казна: " + c.getBankPoints() + " | Специализация: " + c.getGuildType().getDisplayName()).queue();
+                            }
+                        }
+                    }
+                } else if (msg.startsWith("!clan top")) {
+                    String discordId = event.getAuthor().getId();
+                    for (Clan c : clans.values()) {
+                        if (c.getDiscordRoleId() != null) {
+                            Role r = event.getGuild().getRoleById(c.getDiscordRoleId());
+                            if (r != null && event.getMember() != null && event.getMember().getRoles().contains(r)) {
+                                StringBuilder sb = new StringBuilder("**Топ вкладчиков " + c.getName() + ":**\n");
+                                c.getMembers().stream()
+                                        .map(ClanWarsCore.this::getClanPlayer)
+                                        .sorted((a,b) -> Long.compare(b.getContributedPoints(), a.getContributedPoints()))
+                                        .forEach(cp -> {
+                                            OfflinePlayer op = Bukkit.getOfflinePlayer(cp.getUuid());
+                                            sb.append(op.getName()).append(": ").append(cp.getContributedPoints()).append("\n");
+                                        });
+                                event.getChannel().sendMessage(sb.toString()).queue();
+                            }
+                        }
                     }
                 }
             }
@@ -700,7 +1036,108 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
     }
 
     // ==========================================
-    //           ДАТА КЛАССЫ И ПРОЧЕЕ
+    //           NPC МЕНЕДЖЕР
+    // ==========================================
+    public class NPCManager implements Listener {
+        private final Map<String, NPCEntry> npcs = new ConcurrentHashMap<>();
+        private final ClanWarsCore plugin;
+
+        public NPCManager(ClanWarsCore plugin) {
+            this.plugin = plugin;
+            plugin.getServer().getPluginManager().registerEvents(this, plugin);
+            loadNPCs();
+        }
+
+        private void loadNPCs() {
+            if (plugin.getConfig().contains("npcs")) {
+                for (String key : plugin.getConfig().getConfigurationSection("npcs").getKeys(false)) {
+                    String path = "npcs." + key;
+                    String name = plugin.getConfig().getString(path + ".name");
+                    String type = plugin.getConfig().getString(path + ".type");
+                    Location loc = plugin.getConfig().getLocation(path + ".location");
+                    if (name != null && type != null && loc != null) {
+                        NPCEntry entry = new NPCEntry(name, type, loc);
+                        npcs.put(name, entry);
+                        spawnNPC(entry);
+                    }
+                }
+            }
+        }
+
+        public void createNPC(String name, String type, Location location) {
+            if (npcs.containsKey(name)) return;
+            NPCEntry entry = new NPCEntry(name, type, location);
+            npcs.put(name, entry);
+            spawnNPC(entry);
+            saveNPC(entry);
+        }
+
+        private void spawnNPC(NPCEntry entry) {
+            World world = entry.getLocation().getWorld();
+            if (world == null) return;
+            Villager villager = (Villager) world.spawnEntity(entry.getLocation(), EntityType.VILLAGER);
+            villager.setCustomName(entry.getName());
+            villager.setCustomNameVisible(true);
+            villager.setProfession(Villager.Profession.NONE);
+            villager.setAI(false);
+            villager.setInvulnerable(true);
+            entry.setEntity(villager);
+        }
+
+        @EventHandler
+        public void onNPCClick(PlayerInteractEntityEvent event) {
+            if (event.getRightClicked() instanceof Villager) {
+                Villager villager = (Villager) event.getRightClicked();
+                String npcName = villager.getCustomName();
+                if (npcName != null && npcs.containsKey(npcName)) {
+                    NPCEntry entry = npcs.get(npcName);
+                    Player player = event.getPlayer();
+                    switch (entry.getType()) {
+                        case "QUEST":
+                            player.sendMessage("§e[Квесты] Скоро будут доступны!");
+                            break;
+                        case "UPGRADE":
+                            plugin.openUpgradeMenu(player);
+                            break;
+                        case "BANK":
+                            // Здесь можно открыть меню сдачи очков
+                            player.sendMessage("§eБанк: используйте /clan bank deposit <кол-во>");
+                            break;
+                    }
+                    event.setCancelled(true);
+                }
+            }
+        }
+
+        private void saveNPC(NPCEntry entry) {
+            String path = "npcs." + entry.getName();
+            plugin.getConfig().set(path + ".name", entry.getName());
+            plugin.getConfig().set(path + ".type", entry.getType());
+            plugin.getConfig().set(path + ".location", entry.getLocation());
+            plugin.saveConfig();
+        }
+
+        private class NPCEntry {
+            private final String name;
+            private final String type;
+            private final Location location;
+            private Villager entity;
+
+            public NPCEntry(String name, String type, Location location) {
+                this.name = name;
+                this.type = type;
+                this.location = location;
+            }
+            public String getName() { return name; }
+            public String getType() { return type; }
+            public Location getLocation() { return location; }
+            public Villager getEntity() { return entity; }
+            public void setEntity(Villager entity) { this.entity = entity; }
+        }
+    }
+
+    // ==========================================
+    //           ДАННЫЕ И УТИЛИТЫ
     // ==========================================
     public ItemStack getDirtyPointItem(int amount) {
         return getCustomItem(Material.GOLD_NUGGET, "§6Осколок Влияния", dirtyKey);
@@ -720,23 +1157,27 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
             ItemStack item = contents[i];
             if (isDirtyPoint(item)) {
                 int stackAmount = item.getAmount();
-                if (consumed + stackAmount <= amountToConsume) { consumed += stackAmount; player.getInventory().setItem(i, null); } 
-                else { int needed = amountToConsume - consumed; item.setAmount(stackAmount - needed); consumed += needed; break; }
+                if (consumed + stackAmount <= amountToConsume) {
+                    consumed += stackAmount;
+                    player.getInventory().setItem(i, null);
+                } else {
+                    int needed = amountToConsume - consumed;
+                    item.setAmount(stackAmount - needed);
+                    consumed += needed;
+                    break;
+                }
             }
         }
         return consumed;
     }
-    private void checkRankUp(Clan clan) {
-        for (ClanRank rank : ClanRank.values()) {
-            if (clan.getRank().ordinal() < rank.ordinal() && clan.getBankPoints() >= rank.getRequiredPoints()) {
-                clan.setRank(rank); Bukkit.broadcastMessage("§e§l[КЛАНЫ] §fКлан §6" + clan.getName() + " §fапнул Ранг §b" + rank.name() + "§f!");
-            }
-        }
-    }
+
     public void markAsGuildItem(ItemStack item) {
-        ItemMeta meta = item.getItemMeta(); meta.getPersistentDataContainer().set(guildItemKey, PersistentDataType.BYTE, (byte) 1);
-        List<String> lore = meta.hasLore() ? meta.getLore() : new ArrayList<>(); lore.add("§b⚜ Артефакт Гильдии (Не выпадает)");
-        meta.setLore(lore); item.setItemMeta(meta);
+        ItemMeta meta = item.getItemMeta();
+        meta.getPersistentDataContainer().set(guildItemKey, PersistentDataType.BYTE, (byte) 1);
+        List<String> lore = meta.hasLore() ? meta.getLore() : new ArrayList<>();
+        lore.add("§b⚜ Артефакт Гильдии (Не выпадает)");
+        meta.setLore(lore);
+        item.setItemMeta(meta);
     }
 
     private void loadLinks() {
@@ -745,15 +1186,21 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
         linkedConfig = YamlConfiguration.loadConfiguration(linkedFile);
         for (String uuidStr : linkedConfig.getKeys(false)) linkedAccounts.put(UUID.fromString(uuidStr), linkedConfig.getString(uuidStr));
     }
+
     private void loadGameData() {
-        File dataFile = new File(getDataFolder(), "data.yml"); if (!dataFile.exists()) return;
+        File dataFile = new File(getDataFolder(), "data.yml");
+        if (!dataFile.exists()) return;
         FileConfiguration data = YamlConfiguration.loadConfiguration(dataFile);
         if (data.contains("clans")) {
             for (String clanId : data.getConfigurationSection("clans").getKeys(false)) {
                 String path = "clans." + clanId;
                 Clan clan = new Clan(clanId, data.getString(path + ".name"), UUID.fromString(data.getString(path + ".leader")));
-                clan.setRank(ClanRank.valueOf(data.getString(path + ".rank", "F"))); clan.setGuildType(GuildType.valueOf(data.getString(path + ".guild", "NONE")));
-                clan.addBankPoints(data.getLong(path + ".bank", 0)); clan.setDiscordRoleId(data.getString(path + ".discordRole")); clan.setDiscordTextChannelId(data.getString(path + ".discordChannel"));
+                clan.setRank(ClanRank.valueOf(data.getString(path + ".rank", "F")));
+                clan.setGuildType(GuildType.valueOf(data.getString(path + ".guild", "NONE")));
+                clan.addBankPoints(data.getLong(path + ".bank", 0));
+                clan.setDiscordRoleId(data.getString(path + ".discordRole"));
+                clan.setDiscordTextChannelId(data.getString(path + ".discordChannel"));
+                clan.setDiscordVoiceChannelId(data.getString(path + ".discordVoice"));
                 for (String m : data.getStringList(path + ".members")) clan.getMembers().add(UUID.fromString(m));
                 clans.put(clanId, clan);
             }
@@ -761,70 +1208,187 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
         if (data.contains("players")) {
             for (String uuidStr : data.getConfigurationSection("players").getKeys(false)) {
                 ClanPlayer cp = new ClanPlayer(UUID.fromString(uuidStr));
-                cp.setClanId(data.getString("players." + uuidStr + ".clanId")); cp.setMaxHealthLevel(data.getInt("players." + uuidStr + ".hpLevel", 0));
+                cp.setClanId(data.getString("players." + uuidStr + ".clanId"));
+                cp.setMaxHealthLevel(data.getInt("players." + uuidStr + ".hpLevel", 0));
                 cp.addContributedPoints(data.getLong("players." + uuidStr + ".contributed", 0));
-                cp.setDailyPvEPoints(data.getInt("players." + uuidStr + ".dailyPoints", 0)); cp.setLastFarmDate(data.getString("players." + uuidStr + ".farmDate", ""));
+                cp.setDailyPvEPoints(data.getInt("players." + uuidStr + ".dailyPoints", 0));
+                cp.setLastFarmDate(data.getString("players." + uuidStr + ".farmDate", ""));
+                cp.setPersonalPoints(data.getLong("players." + uuidStr + ".personalPoints", 0));
+                cp.setLastClanCreation(data.getLong("players." + uuidStr + ".lastClanCreation", 0));
+                cp.setLastClanExit(data.getLong("players." + uuidStr + ".lastClanExit", 0));
                 players.put(cp.getUuid(), cp);
             }
         }
     }
+
     private void saveData() {
-        File dataFile = new File(getDataFolder(), "data.yml"); FileConfiguration data = YamlConfiguration.loadConfiguration(dataFile);
+        File dataFile = new File(getDataFolder(), "data.yml");
+        FileConfiguration data = YamlConfiguration.loadConfiguration(dataFile);
         data.set("clans", null);
         for (Clan c : clans.values()) {
             String path = "clans." + c.getId();
-            data.set(path + ".name", c.getName()); data.set(path + ".leader", c.getLeader().toString()); data.set(path + ".rank", c.getRank().name());
-            data.set(path + ".guild", c.getGuildType().name()); data.set(path + ".bank", c.getBankPoints()); data.set(path + ".discordRole", c.getDiscordRoleId());
+            data.set(path + ".name", c.getName());
+            data.set(path + ".leader", c.getLeader().toString());
+            data.set(path + ".rank", c.getRank().name());
+            data.set(path + ".guild", c.getGuildType().name());
+            data.set(path + ".bank", c.getBankPoints());
+            data.set(path + ".discordRole", c.getDiscordRoleId());
             data.set(path + ".discordChannel", c.getDiscordTextChannelId());
+            data.set(path + ".discordVoice", c.getDiscordVoiceChannelId());
             data.set(path + ".members", c.getMembers().stream().map(UUID::toString).collect(Collectors.toList()));
         }
         data.set("players", null);
         for (ClanPlayer cp : players.values()) {
             String path = "players." + cp.getUuid().toString();
-            data.set(path + ".clanId", cp.getClanId()); data.set(path + ".hpLevel", cp.getMaxHealthLevel()); data.set(path + ".contributed", cp.getContributedPoints());
-            data.set(path + ".dailyPoints", cp.getDailyPvEPoints()); data.set(path + ".farmDate", cp.getLastFarmDate());
+            data.set(path + ".clanId", cp.getClanId());
+            data.set(path + ".hpLevel", cp.getMaxHealthLevel());
+            data.set(path + ".contributed", cp.getContributedPoints());
+            data.set(path + ".dailyPoints", cp.getDailyPvEPoints());
+            data.set(path + ".farmDate", cp.getLastFarmDate());
+            data.set(path + ".personalPoints", cp.getPersonalPoints());
+            data.set(path + ".lastClanCreation", cp.getLastClanCreation());
+            data.set(path + ".lastClanExit", cp.getLastClanExit());
         }
         try { data.save(dataFile); } catch (IOException ignored) {}
     }
 
-    public ClanPlayer getClanPlayer(UUID uuid) { return players.computeIfAbsent(uuid, k -> new ClanPlayer(uuid)); }
-
-    public enum GuildType { NONE("Без гильдии"), BLACKSMITH("Железный Легион"), MAGE("Тайный Орден"), ENGINEER("Гильдия Инженеров"), SMUGGLER("Синдикат");
-        private final String d; GuildType(String d) { this.d = d; } public String getDisplayName() { return d; }
+    public ClanPlayer getClanPlayer(UUID uuid) {
+        return players.computeIfAbsent(uuid, k -> new ClanPlayer(uuid));
     }
-    public enum ClanRank { F(0), E(5000), D(15000), C(40000), B(100000), A(250000), S(500000), S_PLUS(1000000); private final long r; ClanRank(long r) { this.r = r; } public long getRequiredPoints() { return r; } }
+
+    // ==========================================
+    //           ENUMS И ВНУТРЕННИЕ КЛАССЫ
+    // ==========================================
+    public enum GuildType {
+        NONE("Без гильдии"),
+        BLACKSMITH("Железный Легион"),
+        MAGE("Тайный Орден"),
+        ENGINEER("Гильдия Инженеров"),
+        SMUGGLER("Синдикат");
+
+        private final String displayName;
+        GuildType(String displayName) { this.displayName = displayName; }
+        public String getDisplayName() { return displayName; }
+    }
+
+    public enum ClanRank {
+        F(0, "F"),
+        F_PLUS(1500, "F+"),
+        E(3500, "E"),
+        E_PLUS(6000, "E+"),
+        D(10000, "D"),
+        D_PLUS(15000, "D+"),
+        C(22000, "C"),
+        C_PLUS(32000, "C+"),
+        B(45000, "B"),
+        B_PLUS(60000, "B+"),
+        A(80000, "A"),
+        A_PLUS(110000, "A+"),
+        S(150000, "S"),
+        S_PLUS(200000, "S+");
+
+        private final long requiredPoints;
+        private final String displayName;
+
+        ClanRank(long requiredPoints, String displayName) {
+            this.requiredPoints = requiredPoints;
+            this.displayName = displayName;
+        }
+        public long getRequiredPoints() { return requiredPoints; }
+        public String getDisplayName() { return displayName; }
+    }
 
     public static class ClanPlayer {
-        private final UUID uuid; private String clanId; private int maxHealthLevel = 0;
-        private boolean clanChatEnabled = false; private long contributedPoints = 0;
-        private int dailyPvEPoints = 0; private String lastFarmDate = "";
-        
+        private final UUID uuid;
+        private String clanId;
+        private int maxHealthLevel = 0;
+        private boolean clanChatEnabled = false;
+        private long contributedPoints = 0;
+        private int dailyPvEPoints = 0;
+        private String lastFarmDate = "";
+        private long personalPoints = 0;
+        private long lastClanCreation = 0;
+        private long lastClanExit = 0;
+        private int dailyPvpPoints = 0;
+        private String lastPvpDate = "";
+
         public ClanPlayer(UUID uuid) { this.uuid = uuid; }
-        public UUID getUuid() { return uuid; } public String getClanId() { return clanId; } public void setClanId(String c) { this.clanId = c; }
-        public int getMaxHealthLevel() { return maxHealthLevel; } public void setMaxHealthLevel(int l) { this.maxHealthLevel = l; }
-        public boolean isClanChatEnabled() { return clanChatEnabled; } public void setClanChatEnabled(boolean b) { this.clanChatEnabled = b; }
-        public long getContributedPoints() { return contributedPoints; } public void addContributedPoints(long amt) { this.contributedPoints += amt; }
-        public int getDailyPvEPoints() { return dailyPvEPoints; } public void setDailyPvEPoints(int p) { this.dailyPvEPoints = p; }
-        public String getLastFarmDate() { return lastFarmDate; } public void setLastFarmDate(String d) { this.lastFarmDate = d; }
+        public UUID getUuid() { return uuid; }
+        public String getClanId() { return clanId; }
+        public void setClanId(String c) { this.clanId = c; }
+        public int getMaxHealthLevel() { return maxHealthLevel; }
+        public void setMaxHealthLevel(int l) { this.maxHealthLevel = l; }
+        public boolean isClanChatEnabled() { return clanChatEnabled; }
+        public void setClanChatEnabled(boolean b) { this.clanChatEnabled = b; }
+        public long getContributedPoints() { return contributedPoints; }
+        public void addContributedPoints(long amt) { this.contributedPoints += amt; }
+        public int getDailyPvEPoints() { return dailyPvEPoints; }
+        public void setDailyPvEPoints(int p) { this.dailyPvEPoints = p; }
+        public String getLastFarmDate() { return lastFarmDate; }
+        public void setLastFarmDate(String d) { this.lastFarmDate = d; }
+        public long getPersonalPoints() { return personalPoints; }
+        public void addPersonalPoints(long amt) { this.personalPoints += amt; }
+        public boolean spendPersonalPoints(long amt) {
+            if (personalPoints >= amt) {
+                personalPoints -= amt;
+                return true;
+            }
+            return false;
+        }
+        public void setPersonalPoints(long p) { this.personalPoints = p; }
+        public long getLastClanCreation() { return lastClanCreation; }
+        public void setLastClanCreation(long t) { this.lastClanCreation = t; }
+        public long getLastClanExit() { return lastClanExit; }
+        public void setLastClanExit(long t) { this.lastClanExit = t; }
+        public int getDailyPvpPoints() { return dailyPvpPoints; }
+        public void setDailyPvpPoints(int p) { this.dailyPvpPoints = p; }
+        public String getLastPvpDate() { return lastPvpDate; }
+        public void setLastPvpDate(String d) { this.lastPvpDate = d; }
     }
-    
+
     public static class Clan {
-        private String id; private String name; private UUID leader; private Set<UUID> members = new HashSet<>();
-        private ClanRank rank = ClanRank.F; private GuildType selectedGuild = GuildType.NONE;
-        private long bankPoints = 0; private Location nexusLocation; private String discordRoleId; private String discordTextChannelId;
-        public Clan(String id, String name, UUID leader) { this.id = id; this.name = name; this.leader = leader; this.members.add(leader); }
-        public String getId() { return id; } public String getName() { return name; } public UUID getLeader() { return leader; }
-        public Set<UUID> getMembers() { return members; } public ClanRank getRank() { return rank; } public void setRank(ClanRank r) { this.rank = r; }
-        public GuildType getGuildType() { return selectedGuild; } public void setGuildType(GuildType t) { this.selectedGuild = t; }
-        public long getBankPoints() { return bankPoints; } public void addBankPoints(long p) { this.bankPoints += p; }
+        private String id;
+        private String name;
+        private UUID leader;
+        private Set<UUID> members = new HashSet<>();
+        private ClanRank rank = ClanRank.F;
+        private GuildType selectedGuild = GuildType.NONE;
+        private long bankPoints = 0;
+        private Location nexusLocation;
+        private String discordRoleId;
+        private String discordTextChannelId;
+        private String discordVoiceChannelId;
+
+        public Clan(String id, String name, UUID leader) {
+            this.id = id;
+            this.name = name;
+            this.leader = leader;
+            this.members.add(leader);
+        }
+        public String getId() { return id; }
+        public String getName() { return name; }
+        public UUID getLeader() { return leader; }
+        public Set<UUID> getMembers() { return members; }
+        public ClanRank getRank() { return rank; }
+        public void setRank(ClanRank r) { this.rank = r; }
+        public GuildType getGuildType() { return selectedGuild; }
+        public void setGuildType(GuildType t) { this.selectedGuild = t; }
+        public long getBankPoints() { return bankPoints; }
+        public void addBankPoints(long p) { this.bankPoints += p; }
         public void setBankPoints(long p) { this.bankPoints = p; }
-        public Location getNexusLocation() { return nexusLocation; } public void setNexusLocation(Location l) { this.nexusLocation = l; }
-        public String getDiscordRoleId() { return discordRoleId; } public void setDiscordRoleId(String i) { this.discordRoleId = i; }
-        public String getDiscordTextChannelId() { return discordTextChannelId; } public void setDiscordTextChannelId(String i) { this.discordTextChannelId = i; }
+        public Location getNexusLocation() { return nexusLocation; }
+        public void setNexusLocation(Location l) { this.nexusLocation = l; }
+        public String getDiscordRoleId() { return discordRoleId; }
+        public void setDiscordRoleId(String i) { this.discordRoleId = i; }
+        public String getDiscordTextChannelId() { return discordTextChannelId; }
+        public void setDiscordTextChannelId(String i) { this.discordTextChannelId = i; }
+        public String getDiscordVoiceChannelId() { return discordVoiceChannelId; }
+        public void setDiscordVoiceChannelId(String i) { this.discordVoiceChannelId = i; }
     }
 
     public static class PendingVerification {
-        public String ip; public long timestamp;
+        public String ip;
+        public long timestamp;
         public PendingVerification(String ip, long t) { this.ip = ip; this.timestamp = t; }
     }
 }
