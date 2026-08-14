@@ -65,7 +65,8 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
     private final Map<UUID, String> pendingInvites = new ConcurrentHashMap<>();
     private final Map<UUID, Long> lastDailyReward = new ConcurrentHashMap<>();
 
-    private NamespacedKey guildItemKey, nexusKey, pawboxKey, scrollInfernoKey, scrollPlagueKey, c4Key;
+    // ДОБАВЛЕН trackerKey
+    private NamespacedKey trackerKey, guildItemKey, nexusKey, pawboxKey, scrollInfernoKey, scrollPlagueKey, c4Key;
 
     private File linkedFile;
     private FileConfiguration linkedConfig;
@@ -83,6 +84,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
         botToken = getConfig().getString("discord.bot-token");
         guildId = getConfig().getString("discord.guild-id");
 
+        trackerKey = new NamespacedKey(this, "blood_tracker");
         guildItemKey = new NamespacedKey(this, "guild_item");
         nexusKey = new NamespacedKey(this, "nexus_block");
         pawboxKey = new NamespacedKey(this, "pawbox");
@@ -215,7 +217,6 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
             event.setCancelled(true);
             Player p = (Player) event.getWhoClicked();
             
-            // Защита от NullPointerException
             String clanId = getClanPlayer(p.getUniqueId()).getClanId();
             if (clanId == null || !clans.containsKey(clanId)) return;
             Clan clan = clans.get(clanId);
@@ -284,7 +285,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
             for (Entity e : p.getNearbyEntities(7, 7, 7)) if (e instanceof LivingEntity && e != p) ((LivingEntity) e).addPotionEffect(new PotionEffect(PotionEffectType.POISON, 200, 1));
             p.sendMessage("§2Вы выпустили Чуму!");
         }
-        else if (item.getType() == Material.COMPASS && item.getItemMeta().getDisplayName().contains("Трекер Крови")) {
+        else if (item.getItemMeta().getPersistentDataContainer().has(trackerKey, PersistentDataType.BYTE)) {
             Player richest = null; int maxPts = 0;
             for (Player t : Bukkit.getOnlinePlayers()) {
                 if (t.equals(p)) continue;
@@ -292,6 +293,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
                 if (pts > maxPts) { maxPts = pts; richest = t; }
             }
             if (richest != null) { p.setCompassTarget(richest.getLocation()); p.sendMessage("§cЦель: " + richest.getName()); }
+            else { p.sendMessage("§7Целей не найдено."); }
         }
         else if (item.getItemMeta().getPersistentDataContainer().has(pawboxKey, PersistentDataType.BYTE)) {
             event.setCancelled(true);
@@ -415,7 +417,6 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
                 Player inviter = Bukkit.getPlayer(args[1]);
                 if (inviter == null) { p.sendMessage("§cЛидер не найден!"); return true; }
                 
-                // Защита от NullPointerException
                 String inviteId = pendingInvites.get(p.getUniqueId());
                 if (inviteId == null) {
                     p.sendMessage("§cУ вас нет активных приглашений от этого лидера!");
@@ -625,7 +626,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
             case "radar":
                 if (cp.getClanId() != null && clans.get(cp.getClanId()).getGuildType() == GuildType.SMUGGLER && cp.getPersonalPoints() >= 100) {
                     cp.spendPersonalPoints(100);
-                    p.getInventory().addItem(getCustomItem(Material.COMPASS, "§cТрекер Крови", dirtyKey));
+                    p.getInventory().addItem(getCustomItem(Material.COMPASS, "§cТрекер Крови", trackerKey));
                     p.sendMessage("§aТрекер получен!");
                 } else {
                     p.sendMessage("§cДоступно только Контрабандистам и стоит 100 личных очков.");
@@ -905,8 +906,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
 
         double maxHp = baseHp + (cp.getMaxHealthLevel() * 2);
         
-        // ВНИМАНИЕ: ЗДЕСЬ БЫЛА ОШИБКА ЗДОРОВЬЯ
-        player.setMaxHealth(maxHp); // Это правильный, работающий способ!
+        player.setMaxHealth(maxHp);
 
         switch (clan.getGuildType()) {
             case BLACKSMITH:
