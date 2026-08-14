@@ -2,6 +2,7 @@ package com.yourname.indeprofilebot;
 
 import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.JDABuilder;
+import net.dv8tion.jda.api.Permission;
 import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.entities.Role;
 import net.dv8tion.jda.api.entities.channel.concrete.Category;
@@ -18,6 +19,10 @@ import org.bukkit.NamespacedKey;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.Sound;
 import org.bukkit.World;
+import org.bukkit.Particle;
+import org.bukkit.boss.BarColor;
+import org.bukkit.boss.BarStyle;
+import org.bukkit.boss.BossBar;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -27,6 +32,7 @@ import org.bukkit.entity.*;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
+import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
@@ -63,9 +69,11 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
     private final Map<UUID, String> linkedAccounts = new ConcurrentHashMap<>();
     private final Map<UUID, List<ItemStack>> soulboundItems = new ConcurrentHashMap<>();
     private final Map<UUID, String> pendingInvites = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> radarCooldowns = new ConcurrentHashMap<>();
     private final Map<UUID, Long> lastDailyReward = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> scrollCooldowns = new ConcurrentHashMap<>();
 
-    // ДОБАВЛЕН trackerKey
+    // ИСПРАВЛЕНИЕ: dirtyKey заменен на trackerKey
     private NamespacedKey trackerKey, guildItemKey, nexusKey, pawboxKey, scrollInfernoKey, scrollPlagueKey, c4Key;
 
     private File linkedFile;
@@ -73,6 +81,8 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
 
     public final Map<UUID, ClanPlayer> players = new ConcurrentHashMap<>();
     public final Map<String, Clan> clans = new ConcurrentHashMap<>();
+    private final Map<String, Zone> zones = new ConcurrentHashMap<>();
+    private final Map<UUID, QuestProgress> playerQuests = new ConcurrentHashMap<>();
 
     private NPCManager npcManager;
 
@@ -94,6 +104,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
 
         loadLinks();
         loadGameData();
+        loadZones();
 
         if (botToken != null && !botToken.isEmpty() && !botToken.equals("ВСТАВЬТЕ_ТОКЕН_БОТА")) {
             Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
@@ -112,7 +123,6 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
 
         npcManager = new NPCManager(this);
 
-        // Пассивные эффекты
         new BukkitRunnable() {
             @Override
             public void run() {
@@ -120,7 +130,6 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
             }
         }.runTaskTimer(this, 20L, 20L);
 
-        // Автосохранение
         new BukkitRunnable() {
             @Override
             public void run() {
@@ -128,12 +137,33 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
             }
         }.runTaskTimerAsynchronously(this, 6000L, 6000L);
 
+        // Спавн мобов в зонах
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                for (Zone zone : zones.values()) {
+                    if (zone.getMobType() != null && zone.getCenter().getWorld() != null) {
+                        for (int i = 0; i < zone.getMobCount(); i++) {
+                            Location spawnLoc = zone.getRandomLocation();
+                            if (spawnLoc != null) {
+                                EntityType type = EntityType.valueOf(zone.getMobType());
+                                if (type != null && type.getEntityClass() != null) {
+                                    spawnLoc.getWorld().spawnEntity(spawnLoc, type);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }.runTaskTimer(this, 1200L, 1200L); // каждые минуту
+
         getLogger().info("ClanWars Season 2: Запущен!");
     }
 
     @Override
     public void onDisable() {
         saveData();
+        saveZones();
         if (jda != null) jda.shutdown();
     }
 
@@ -199,15 +229,22 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
 
         Inventory inv = Bukkit.createInventory(null, 27, "§8Улучшения Клана");
         inv.setItem(11, getCustomItem(Material.GOLDEN_APPLE, "§c❤ Улучшить Здоровье", null,
-                "§7Цена: §e15,000 Очков", "§7Дает +1 сердце всему клану."));
+                "§7Цена: §e15,000 Очков", "§7Дает +1 сердце всему клану. Максимум 10 уровней."));
 
         if (clan.getGuildType() == GuildType.MAGE) {
-            inv.setItem(15, getCustomItem(Material.PAPER, "§5Свитки Магии", null,
-                    "§7Цена: §e5,000 Очков", "§7Выдает Свиток Инферно и Чумы"));
+            inv.setItem(13, getCustomItem(Material.PAPER, "§5Свитки Магии (многоразовые)", null,
+                    "§7Цена: §e5,000 Очков", "§7Выдает Свиток Инферно и Чумы (перезарядка 30 сек)"));
         } else if (clan.getGuildType() == GuildType.ENGINEER) {
-            inv.setItem(15, getCustomItem(Material.TNT, "§4Рейдовый заряд (C4)", null,
+            inv.setItem(13, getCustomItem(Material.TNT, "§4Рейдовый заряд (C4)", null,
                     "§7Цена: §e25,000 Очков", "§7Пробивает базу врагов"));
+        } else if (clan.getGuildType() == GuildType.BLACKSMITH) {
+            inv.setItem(13, getCustomItem(Material.IRON_SWORD, "§6Молот Тора", null,
+                    "§7Цена: §e10,000 Очков", "§7Неразрушимый меч с Knockback II"));
+        } else if (clan.getGuildType() == GuildType.SMUGGLER) {
+            inv.setItem(13, getCustomItem(Material.FISHING_ROD, "§7Крюк-кошка", null,
+                    "§7Цена: §e8,000 Очков", "§7Притягивает цель"));
         }
+
         player.openInventory(inv);
     }
 
@@ -217,6 +254,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
             event.setCancelled(true);
             Player p = (Player) event.getWhoClicked();
             
+            // ИСПРАВЛЕНИЕ: Защита от NullPointerException
             String clanId = getClanPlayer(p.getUniqueId()).getClanId();
             if (clanId == null || !clans.containsKey(clanId)) return;
             Clan clan = clans.get(clanId);
@@ -226,6 +264,18 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
 
             if (clicked.getItemMeta().getDisplayName().contains("Здоровье")) {
                 if (clan.getBankPoints() >= 15000) {
+                    boolean canUpgrade = true;
+                    for (UUID uid : clan.getMembers()) {
+                        ClanPlayer cp = getClanPlayer(uid);
+                        if (cp.getMaxHealthLevel() >= 10) {
+                            canUpgrade = false;
+                            break;
+                        }
+                    }
+                    if (!canUpgrade) {
+                        p.sendMessage("§cКто-то из членов клана уже достиг максимального уровня здоровья (10)!");
+                        return;
+                    }
                     clan.addBankPoints(-15000);
                     for (UUID uid : clan.getMembers()) {
                         ClanPlayer cp = getClanPlayer(uid);
@@ -237,18 +287,78 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
                 } else p.sendMessage("§cНедостаточно Очков!");
             }
             else if (clicked.getItemMeta().getDisplayName().contains("Свитки") && clan.getBankPoints() >= 5000) {
+                if (hasScroll(p)) {
+                    p.sendMessage("§cУ вас уже есть свитки магии!");
+                    return;
+                }
                 clan.addBankPoints(-5000);
                 p.getInventory().addItem(getCustomItem(Material.PAPER, "§cСвиток Инферно", scrollInfernoKey));
                 p.getInventory().addItem(getCustomItem(Material.PAPER, "§2Свиток Чумы", scrollPlagueKey));
                 p.sendMessage("§aСвитки куплены!");
             }
             else if (clicked.getItemMeta().getDisplayName().contains("C4") && clan.getBankPoints() >= 25000) {
+                if (hasItem(p, c4Key)) {
+                    p.sendMessage("§cУ вас уже есть C4!");
+                    return;
+                }
                 clan.addBankPoints(-25000);
                 p.getInventory().addItem(getCustomItem(Material.TNT, "§4Рейдовый Заряд (C4)", c4Key));
                 p.sendMessage("§aЗаряд C4 приобретен!");
             }
+            else if (clicked.getItemMeta().getDisplayName().contains("Молот Тора") && clan.getBankPoints() >= 10000) {
+                if (hasItem(p, guildItemKey)) {
+                    p.sendMessage("§cУ вас уже есть артефакт гильдии!");
+                    return;
+                }
+                clan.addBankPoints(-10000);
+                ItemStack hammer = new ItemStack(Material.IRON_SWORD);
+                ItemMeta hm = hammer.getItemMeta();
+                hm.setDisplayName("§6Молот Тора");
+                hm.setUnbreakable(true);
+                hm.addEnchant(org.bukkit.enchantments.Enchantment.KNOCKBACK, 2, true);
+                hammer.setItemMeta(hm);
+                markAsGuildItem(hammer);
+                p.getInventory().addItem(hammer);
+                p.sendMessage("§aМолот Тора скован!");
+            }
+            else if (clicked.getItemMeta().getDisplayName().contains("Крюк-кошка") && clan.getBankPoints() >= 8000) {
+                if (hasItem(p, guildItemKey)) {
+                    p.sendMessage("§cУ вас уже есть артефакт гильдии!");
+                    return;
+                }
+                clan.addBankPoints(-8000);
+                ItemStack hook = new ItemStack(Material.FISHING_ROD);
+                ItemMeta hm2 = hook.getItemMeta();
+                hm2.setDisplayName("§7Крюк-кошка");
+                hm2.setUnbreakable(true);
+                hook.setItemMeta(hm2);
+                markAsGuildItem(hook);
+                p.getInventory().addItem(hook);
+                p.sendMessage("§aКрюк-кошка получен!");
+            }
             p.closeInventory();
         }
+    }
+
+    private boolean hasScroll(Player p) {
+        for (ItemStack item : p.getInventory().getContents()) {
+            if (item != null && item.hasItemMeta()) {
+                if (item.getItemMeta().getPersistentDataContainer().has(scrollInfernoKey, PersistentDataType.BYTE) ||
+                    item.getItemMeta().getPersistentDataContainer().has(scrollPlagueKey, PersistentDataType.BYTE)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private boolean hasItem(Player p, NamespacedKey key) {
+        for (ItemStack item : p.getInventory().getContents()) {
+            if (item != null && item.hasItemMeta() && item.getItemMeta().getPersistentDataContainer().has(key, PersistentDataType.BYTE)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // ==========================================
@@ -273,18 +383,31 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
 
         if (item.getItemMeta().getPersistentDataContainer().has(scrollInfernoKey, PersistentDataType.BYTE)) {
             event.setCancelled(true);
-            item.setAmount(item.getAmount() - 1);
+            long now = System.currentTimeMillis();
+            if (now - scrollCooldowns.getOrDefault(p.getUniqueId(), 0L) < 30000) {
+                p.sendMessage("§cСвиток перезаряжается! Подождите " + ((30000 - (now - scrollCooldowns.getOrDefault(p.getUniqueId(), 0L))) / 1000) + " сек.");
+                return;
+            }
+            scrollCooldowns.put(p.getUniqueId(), now);
             p.getWorld().playSound(p.getLocation(), Sound.ENTITY_GHAST_SHOOT, 1f, 1f);
+            p.getWorld().spawnParticle(Particle.FLAME, p.getLocation().add(0,1,0), 50, 0.5, 0.5, 0.5, 0.1);
             for (Entity e : p.getNearbyEntities(7, 7, 7)) if (e instanceof LivingEntity && e != p) e.setFireTicks(200);
             p.sendMessage("§cВы активировали Инферно!");
         }
         else if (item.getItemMeta().getPersistentDataContainer().has(scrollPlagueKey, PersistentDataType.BYTE)) {
             event.setCancelled(true);
-            item.setAmount(item.getAmount() - 1);
+            long now = System.currentTimeMillis();
+            if (now - scrollCooldowns.getOrDefault(p.getUniqueId(), 0L) < 30000) {
+                p.sendMessage("§cСвиток перезаряжается! Подождите " + ((30000 - (now - scrollCooldowns.getOrDefault(p.getUniqueId(), 0L))) / 1000) + " сек.");
+                return;
+            }
+            scrollCooldowns.put(p.getUniqueId(), now);
             p.getWorld().playSound(p.getLocation(), Sound.ENTITY_WITCH_THROW, 1f, 1f);
+            p.getWorld().spawnParticle(Particle.SLIME, p.getLocation().add(0,1,0), 50, 0.5, 0.5, 0.5, 0.1);
             for (Entity e : p.getNearbyEntities(7, 7, 7)) if (e instanceof LivingEntity && e != p) ((LivingEntity) e).addPotionEffect(new PotionEffect(PotionEffectType.POISON, 200, 1));
             p.sendMessage("§2Вы выпустили Чуму!");
         }
+        // ИСПРАВЛЕНИЕ: Используем правильный ключ trackerKey для трекера
         else if (item.getItemMeta().getPersistentDataContainer().has(trackerKey, PersistentDataType.BYTE)) {
             Player richest = null; int maxPts = 0;
             for (Player t : Bukkit.getOnlinePlayers()) {
@@ -299,6 +422,13 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
             event.setCancelled(true);
             item.setAmount(item.getAmount() - 1);
             openPawBox(p);
+        }
+        else if (item.getType() == Material.FISHING_ROD && item.getItemMeta().getDisplayName().contains("Крюк-кошка")) {
+            Entity target = p.getTargetEntity(30);
+            if (target != null && target instanceof LivingEntity) {
+                target.teleport(p.getLocation().add(0, 1, 0));
+                p.sendMessage("§aЦель притянута!");
+            }
         }
     }
 
@@ -316,7 +446,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
             Bukkit.broadcastMessage("§e§l[PawBox] §fИгрок §6" + player.getName() + " §fвыбил Легендарный Артефакт!");
         } else if (roll < 60) {
             grantPoints(player, 32);
-            player.sendMessage("§aВыбили 32 очка! Они автоматически добавлены на ваш виртуальный баланс.");
+            player.sendMessage("§aВыбили 32 очка! Они автоматически добавлены на ваш баланс.");
         } else {
             player.getInventory().addItem(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 1));
             player.getInventory().addItem(new ItemStack(Material.ANCIENT_DEBRIS, 2));
@@ -417,6 +547,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
                 Player inviter = Bukkit.getPlayer(args[1]);
                 if (inviter == null) { p.sendMessage("§cЛидер не найден!"); return true; }
                 
+                // ИСПРАВЛЕНИЕ: Защита от NullPointerException
                 String inviteId = pendingInvites.get(p.getUniqueId());
                 if (inviteId == null) {
                     p.sendMessage("§cУ вас нет активных приглашений от этого лидера!");
@@ -626,6 +757,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
             case "radar":
                 if (cp.getClanId() != null && clans.get(cp.getClanId()).getGuildType() == GuildType.SMUGGLER && cp.getPersonalPoints() >= 100) {
                     cp.spendPersonalPoints(100);
+                    // ИСПРАВЛЕНИЕ: Используем правильный ключ trackerKey
                     p.getInventory().addItem(getCustomItem(Material.COMPASS, "§cТрекер Крови", trackerKey));
                     p.sendMessage("§aТрекер получен!");
                 } else {
@@ -648,10 +780,26 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
                 if (p.isOp() && args.length >= 3) {
                     String npcName = args[1];
                     String npcType = args[2].toUpperCase();
-                    npcManager.createNPC(npcName, npcType, p.getLocation());
+                    String guildName = args.length >= 4 ? args[3].toUpperCase() : "NONE";
+                    npcManager.createNPC(npcName, npcType, p.getLocation(), guildName);
                     p.sendMessage("§aNPC создан!");
                 } else {
-                    p.sendMessage("§cИспользование: /clan npc <имя> <тип: QUEST/UPGRADE/BANK/SHOP>");
+                    p.sendMessage("§cИспользование: /clan npc <имя> <тип: QUEST/UPGRADE/BANK/SHOP> [гильдия]");
+                }
+                break;
+
+            case "zone":
+                if (p.isOp() && args.length >= 3) {
+                    String zoneName = args[1];
+                    int radius = Integer.parseInt(args[2]);
+                    String mobType = args.length >= 4 ? args[3].toUpperCase() : "ZOMBIE";
+                    int mobCount = args.length >= 5 ? Integer.parseInt(args[4]) : 3;
+                    Zone zone = new Zone(zoneName, p.getLocation(), radius, mobType, mobCount);
+                    zones.put(zoneName, zone);
+                    saveZones();
+                    p.sendMessage("§aЗона '" + zoneName + "' создана с мобами " + mobType + " (" + mobCount + " шт.)");
+                } else {
+                    p.sendMessage("§cИспользование: /clan zone <имя> <радиус> [моб] [кол-во]");
                 }
                 break;
 
@@ -702,6 +850,8 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
         p.sendMessage("§f/clan forge §7- сковать артефакт (Кузнецы)");
         p.sendMessage("§f/clan radar §7- получить трекер (Контрабандисты)");
         p.sendMessage("§f/clan nexus §7- получить сердце клана (лидер)");
+        p.sendMessage("§f/clan zone <имя> <радиус> [моб] [кол-во] §7- создать зону спавна (админ)");
+        p.sendMessage("§f/clan npc <имя> <тип> [гильдия] §7- создать NPC (админ)");
     }
 
     // ==========================================
@@ -713,16 +863,27 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
         Player killer = event.getEntity().getKiller();
         ClanPlayer cp = getClanPlayer(killer.getUniqueId());
 
+        // Обновление прогресса квестов
+        if (playerQuests.containsKey(killer.getUniqueId())) {
+            QuestProgress qp = playerQuests.get(killer.getUniqueId());
+            if (qp.getType() == QuestType.KILL_MOBS) {
+                qp.incrementProgress();
+                if (qp.isComplete()) {
+                    grantPoints(killer, 50);
+                    killer.sendMessage("§aКвест выполнен! Вы получили 50 очков.");
+                    playerQuests.remove(killer.getUniqueId());
+                }
+            }
+        }
+
         if (!isSpecialMob(event.getEntity())) return;
 
         int limit = getConfig().getInt("limits.daily-pve-points", 500);
-
         String today = LocalDate.now().toString();
         if (!today.equals(cp.getLastFarmDate())) {
             cp.setLastFarmDate(today);
             cp.setDailyPvEPoints(0);
         }
-
         if (cp.getDailyPvEPoints() < limit) {
             cp.setDailyPvEPoints(cp.getDailyPvEPoints() + 1);
             int points = getPointsForMob(event.getEntity().getType());
@@ -736,7 +897,6 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
             allowedTypes = Arrays.asList("WITHER", "ELDER_GUARDIAN", "RAVAGER", "ENDER_DRAGON");
         }
         if (allowedTypes.contains(entity.getType().name())) return true;
-
         if (getConfig().getBoolean("special-mobs.require-custom-name", false)) {
             if (entity.getCustomName() != null && entity.getCustomName().equals(getConfig().getString("special-mobs.custom-name", "§6Элитный моб"))) {
                 return true;
@@ -754,7 +914,6 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
         Player victim = event.getEntity();
         Player killer = victim.getKiller();
 
-        // Сохранение гильдейских артефактов
         List<ItemStack> saved = new ArrayList<>();
         Iterator<ItemStack> it = event.getDrops().iterator();
         while (it.hasNext()) {
@@ -766,7 +925,6 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
         }
         if (!saved.isEmpty()) soulboundItems.put(victim.getUniqueId(), saved);
 
-        // PvP очки
         if (killer != null && !killer.equals(victim)) {
             ClanPlayer vcp = getClanPlayer(victim.getUniqueId());
             ClanPlayer kcp = getClanPlayer(killer.getUniqueId());
@@ -783,7 +941,6 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
             Clan kClan = kcp.getClanId() != null ? clans.get(kcp.getClanId()) : null;
 
             int points = 50;
-
             int vRank = vClan != null ? vClan.getRank().ordinal() : -1;
             int kRank = kClan != null ? kClan.getRank().ordinal() : -1;
 
@@ -836,6 +993,45 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
                     }
                 }
             }
+        }
+    }
+
+    // ==========================================
+    //           ЗАЩИТА ЗОН
+    // ==========================================
+    @EventHandler
+    public void onBlockBreak(BlockBreakEvent event) {
+        if (event.getPlayer().isOp()) return;
+        for (Zone zone : zones.values()) {
+            if (zone.isInside(event.getBlock().getLocation())) {
+                event.setCancelled(true);
+                event.getPlayer().sendMessage("§cЭта территория защищена!");
+                break;
+            }
+        }
+    }
+
+    @EventHandler
+    public void onBlockPlace(BlockPlaceEvent event) {
+        if (event.getPlayer().isOp()) return;
+        for (Zone zone : zones.values()) {
+            if (zone.isInside(event.getBlock().getLocation())) {
+                event.setCancelled(true);
+                event.getPlayer().sendMessage("§cЭта территория защищена!");
+                break;
+            }
+        }
+    }
+
+    // ==========================================
+    //           ЗАПРЕТ ВЫБРАСЫВАНИЯ АРТЕФАКТОВ
+    // ==========================================
+    @EventHandler
+    public void onItemDrop(PlayerDropItemEvent event) {
+        ItemStack item = event.getItemDrop().getItemStack();
+        if (item.hasItemMeta() && item.getItemMeta().getPersistentDataContainer().has(guildItemKey, PersistentDataType.BYTE)) {
+            event.setCancelled(true);
+            event.getPlayer().sendMessage("§cАртефакт гильдии нельзя выбрасывать!");
         }
     }
 
@@ -906,6 +1102,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
 
         double maxHp = baseHp + (cp.getMaxHealthLevel() * 2);
         
+        // ИСПРАВЛЕНИЕ: Меняем реальное здоровье, а не сжимаем интерфейс!
         player.setMaxHealth(maxHp);
 
         switch (clan.getGuildType()) {
@@ -958,6 +1155,19 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
         for (ClanRank rank : ClanRank.values()) {
             if (clan.getRank().ordinal() < rank.ordinal() && clan.getBankPoints() >= rank.getRequiredPoints()) {
                 clan.setRank(rank);
+                BossBar bar = Bukkit.createBossBar("§aКлан " + clan.getName() + " достиг ранга " + rank.getDisplayName(),
+                        BarColor.GREEN, BarStyle.SOLID);
+                for (UUID uid : clan.getMembers()) {
+                    Player member = Bukkit.getPlayer(uid);
+                    if (member != null) bar.addPlayer(member);
+                }
+                new BukkitRunnable() {
+                    @Override
+                    public void run() {
+                        bar.removeAll();
+                    }
+                }.runTaskLater(this, 200L);
+
                 Bukkit.broadcastMessage("§e§l[КЛАНЫ] §fКлан §6" + clan.getName() + " §fапнул Ранг §b" + rank.getDisplayName() + "§f!");
             }
         }
@@ -1008,6 +1218,15 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
                 String dId = linkedAccounts.get(leader.getUniqueId());
                 if (dId != null) guild.retrieveMemberById(dId).queue(m -> guild.addRoleToMember(m, role).queue());
                 guild.createCategory("🛡️ " + clan.getName()).queue(cat -> {
+                    cat.upsertPermissionOverride(guild.getPublicRole())
+                       .deny(Permission.VIEW_CHANNEL)
+                       .queue();
+                    Role clanRole = guild.getRoleById(clan.getDiscordRoleId());
+                    if (clanRole != null) {
+                        cat.upsertPermissionOverride(clanRole)
+                           .grant(Permission.VIEW_CHANNEL, Permission.MESSAGE_SEND, Permission.VOICE_CONNECT)
+                           .queue();
+                    }
                     cat.createTextChannel("штаб").queue(txt -> clan.setDiscordTextChannelId(txt.getId()));
                     cat.createVoiceChannel("голосовой").queue(vc -> clan.setDiscordVoiceChannelId(vc.getId()));
                 });
@@ -1099,8 +1318,9 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
                     String name = plugin.getConfig().getString(path + ".name");
                     String type = plugin.getConfig().getString(path + ".type");
                     Location loc = plugin.getConfig().getLocation(path + ".location");
+                    String guild = plugin.getConfig().getString(path + ".guild", "NONE");
                     if (name != null && type != null && loc != null) {
-                        NPCEntry entry = new NPCEntry(name, type, loc);
+                        NPCEntry entry = new NPCEntry(name, type, loc, guild);
                         npcs.put(name, entry);
                         spawnNPC(entry);
                     }
@@ -1108,9 +1328,9 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
             }
         }
 
-        public void createNPC(String name, String type, Location location) {
+        public void createNPC(String name, String type, Location location, String guildName) {
             if (npcs.containsKey(name)) return;
-            NPCEntry entry = new NPCEntry(name, type, location);
+            NPCEntry entry = new NPCEntry(name, type, location, guildName);
             npcs.put(name, entry);
             spawnNPC(entry);
             saveNPC(entry);
@@ -1136,9 +1356,24 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
                 if (npcName != null && npcs.containsKey(npcName)) {
                     NPCEntry entry = npcs.get(npcName);
                     Player player = event.getPlayer();
+
+                    ClanPlayer cp = plugin.getClanPlayer(player.getUniqueId());
+                    Clan clan = cp.getClanId() != null ? plugin.clans.get(cp.getClanId()) : null;
+                    GuildType playerGuild = clan != null ? clan.getGuildType() : GuildType.NONE;
+                    if (!entry.getRequiredGuild().equals("NONE") && !entry.getRequiredGuild().equals(playerGuild.name())) {
+                        player.sendMessage("§cЭтот NPC доступен только для гильдии " + entry.getRequiredGuild());
+                        return;
+                    }
+
                     switch (entry.getType()) {
                         case "QUEST":
-                            player.sendMessage("§e[Квесты] Скоро будут доступны!");
+                            if (!plugin.playerQuests.containsKey(player.getUniqueId())) {
+                                plugin.playerQuests.put(player.getUniqueId(), new QuestProgress(QuestType.KILL_MOBS, 0, 20));
+                                player.sendMessage("§aПолучен квест: убейте 20 мобов.");
+                            } else {
+                                QuestProgress qp = plugin.playerQuests.get(player.getUniqueId());
+                                player.sendMessage("§eПрогресс квеста: " + qp.getProgress() + "/" + qp.getTarget());
+                            }
                             break;
                         case "UPGRADE":
                             plugin.openUpgradeMenu(player);
@@ -1147,7 +1382,10 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
                             player.sendMessage("§eБанк: используйте /clan bank deposit <кол-во>");
                             break;
                         case "SHOP":
-                            player.sendMessage("§eМагазин: скоро откроется!");
+                            Inventory shop = Bukkit.createInventory(null, 9, "§8Магазин");
+                            shop.setItem(0, plugin.getCustomItem(Material.PAPER, "§cСвиток Инферно", scrollInfernoKey, "§7Цена: 100 очков"));
+                            shop.setItem(1, plugin.getCustomItem(Material.PAPER, "§2Свиток Чумы", scrollPlagueKey, "§7Цена: 100 очков"));
+                            player.openInventory(shop);
                             break;
                     }
                     event.setCancelled(true);
@@ -1160,6 +1398,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
             plugin.getConfig().set(path + ".name", entry.getName());
             plugin.getConfig().set(path + ".type", entry.getType());
             plugin.getConfig().set(path + ".location", entry.getLocation());
+            plugin.getConfig().set(path + ".guild", entry.getRequiredGuild());
             plugin.saveConfig();
         }
 
@@ -1167,19 +1406,113 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
             private final String name;
             private final String type;
             private final Location location;
+            private final String requiredGuild;
             private Villager entity;
 
-            public NPCEntry(String name, String type, Location location) {
+            public NPCEntry(String name, String type, Location location, String requiredGuild) {
                 this.name = name;
                 this.type = type;
                 this.location = location;
+                this.requiredGuild = requiredGuild;
             }
             public String getName() { return name; }
             public String getType() { return type; }
             public Location getLocation() { return location; }
+            public String getRequiredGuild() { return requiredGuild; }
             public Villager getEntity() { return entity; }
             public void setEntity(Villager entity) { this.entity = entity; }
         }
+    }
+
+    // ==========================================
+    //           ЗОНЫ
+    // ==========================================
+    public static class Zone {
+        private final String name;
+        private final Location center;
+        private final int radius;
+        private final String mobType;
+        private final int mobCount;
+
+        public Zone(String name, Location center, int radius, String mobType, int mobCount) {
+            this.name = name;
+            this.center = center;
+            this.radius = radius;
+            this.mobType = mobType;
+            this.mobCount = mobCount;
+        }
+
+        public boolean isInside(Location loc) {
+            return loc.getWorld().equals(center.getWorld()) && loc.distance(center) <= radius;
+        }
+
+        public Location getRandomLocation() {
+            Random rand = new Random();
+            double angle = rand.nextDouble() * 2 * Math.PI;
+            double distance = rand.nextDouble() * radius;
+            double dx = distance * Math.cos(angle);
+            double dz = distance * Math.sin(angle);
+            Location loc = center.clone().add(dx, 0, dz);
+            loc.setY(center.getWorld().getHighestBlockYAt(loc));
+            return loc;
+        }
+
+        public String getName() { return name; }
+        public Location getCenter() { return center; }
+        public int getRadius() { return radius; }
+        public String getMobType() { return mobType; }
+        public int getMobCount() { return mobCount; }
+    }
+
+    private void saveZones() {
+        FileConfiguration config = getConfig();
+        config.set("zones", null);
+        for (Zone zone : zones.values()) {
+            String path = "zones." + zone.getName();
+            config.set(path + ".center", zone.getCenter());
+            config.set(path + ".radius", zone.getRadius());
+            config.set(path + ".mobType", zone.getMobType());
+            config.set(path + ".mobCount", zone.getMobCount());
+        }
+        saveConfig();
+    }
+
+    private void loadZones() {
+        if (getConfig().contains("zones")) {
+            for (String key : getConfig().getConfigurationSection("zones").getKeys(false)) {
+                String path = "zones." + key;
+                Location center = getConfig().getLocation(path + ".center");
+                int radius = getConfig().getInt(path + ".radius");
+                String mobType = getConfig().getString(path + ".mobType", "ZOMBIE");
+                int mobCount = getConfig().getInt(path + ".mobCount", 3);
+                if (center != null) {
+                    zones.put(key, new Zone(key, center, radius, mobType, mobCount));
+                }
+            }
+        }
+    }
+
+    // ==========================================
+    //           КВЕСТЫ
+    // ==========================================
+    public enum QuestType { KILL_MOBS, COLLECT_RESOURCES, KILL_BOSS }
+
+    public static class QuestProgress {
+        private final QuestType type;
+        private int progress;
+        private final int target;
+
+        public QuestProgress(QuestType type, int progress, int target) {
+            this.type = type;
+            this.progress = progress;
+            this.target = target;
+        }
+
+        public void incrementProgress() { progress++; }
+        public boolean isComplete() { return progress >= target; }
+        public QuestType getType() { return type; }
+        public int getProgress() { return progress; }
+        public int getTarget() { return target; }
     }
 
     // ==========================================
