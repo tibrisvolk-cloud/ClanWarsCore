@@ -2,10 +2,8 @@ package com.yourname.indeprofilebot;
 
 import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.JDABuilder;
-import net.dv8tion.jda.api.Permission;
 import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.entities.Role;
-import net.dv8tion.jda.api.entities.User;
 import net.dv8tion.jda.api.entities.channel.concrete.Category;
 import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
 import net.dv8tion.jda.api.entities.channel.concrete.VoiceChannel;
@@ -14,7 +12,6 @@ import net.dv8tion.jda.api.events.message.MessageReceivedEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
 import net.dv8tion.jda.api.requests.GatewayIntent;
 import org.bukkit.Bukkit;
-import org.bukkit.ChatColor;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
@@ -66,10 +63,9 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
     private final Map<UUID, String> linkedAccounts = new ConcurrentHashMap<>();
     private final Map<UUID, List<ItemStack>> soulboundItems = new ConcurrentHashMap<>();
     private final Map<UUID, String> pendingInvites = new ConcurrentHashMap<>();
-    private final Map<UUID, Long> radarCooldowns = new ConcurrentHashMap<>();
     private final Map<UUID, Long> lastDailyReward = new ConcurrentHashMap<>();
 
-    private NamespacedKey dirtyKey, guildItemKey, nexusKey, pawboxKey, scrollInfernoKey, scrollPlagueKey, c4Key;
+    private NamespacedKey guildItemKey, nexusKey, pawboxKey, scrollInfernoKey, scrollPlagueKey, c4Key;
 
     private File linkedFile;
     private FileConfiguration linkedConfig;
@@ -87,7 +83,6 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
         botToken = getConfig().getString("discord.bot-token");
         guildId = getConfig().getString("discord.guild-id");
 
-        dirtyKey = new NamespacedKey(this, "dirty_point");
         guildItemKey = new NamespacedKey(this, "guild_item");
         nexusKey = new NamespacedKey(this, "nexus_block");
         pawboxKey = new NamespacedKey(this, "pawbox");
@@ -219,8 +214,12 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
         if (event.getView().getTitle().equals("§8Улучшения Клана")) {
             event.setCancelled(true);
             Player p = (Player) event.getWhoClicked();
-            Clan clan = clans.get(getClanPlayer(p.getUniqueId()).getClanId());
-            if (clan == null) return;
+            
+            // Защита от NullPointerException
+            String clanId = getClanPlayer(p.getUniqueId()).getClanId();
+            if (clanId == null || !clans.containsKey(clanId)) return;
+            Clan clan = clans.get(clanId);
+            
             ItemStack clicked = event.getCurrentItem();
             if (clicked == null || !clicked.hasItemMeta()) return;
 
@@ -289,7 +288,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
             Player richest = null; int maxPts = 0;
             for (Player t : Bukkit.getOnlinePlayers()) {
                 if (t.equals(p)) continue;
-                int pts = getClanPlayer(t.getUniqueId()).getPersonalPoints();
+                int pts = (int) getClanPlayer(t.getUniqueId()).getPersonalPoints();
                 if (pts > maxPts) { maxPts = pts; richest = t; }
             }
             if (richest != null) { p.setCompassTarget(richest.getLocation()); p.sendMessage("§cЦель: " + richest.getName()); }
@@ -315,7 +314,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
             Bukkit.broadcastMessage("§e§l[PawBox] §fИгрок §6" + player.getName() + " §fвыбил Легендарный Артефакт!");
         } else if (roll < 60) {
             grantPoints(player, 32);
-            player.sendMessage("§aВыбили 32 очка! Они автоматически разделены 50/50.");
+            player.sendMessage("§aВыбили 32 очка! Они автоматически добавлены на ваш виртуальный баланс.");
         } else {
             player.getInventory().addItem(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 1));
             player.getInventory().addItem(new ItemStack(Material.ANCIENT_DEBRIS, 2));
@@ -415,13 +414,22 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
                 if (args.length < 2) { p.sendMessage("§cУкажите ник лидера: /clan confirm <ник>"); return true; }
                 Player inviter = Bukkit.getPlayer(args[1]);
                 if (inviter == null) { p.sendMessage("§cЛидер не найден!"); return true; }
-                Clan targetClan = clans.get(pendingInvites.get(p.getUniqueId()));
-                if (targetClan == null || !targetClan.getLeader().equals(inviter.getUniqueId())) {
-                    p.sendMessage("§cНет активного приглашения от этого лидера!");
+                
+                // Защита от NullPointerException
+                String inviteId = pendingInvites.get(p.getUniqueId());
+                if (inviteId == null) {
+                    p.sendMessage("§cУ вас нет активных приглашений от этого лидера!");
                     return true;
                 }
+                
+                Clan targetClan = clans.get(inviteId);
+                if (targetClan == null || !targetClan.getLeader().equals(inviter.getUniqueId())) {
+                    p.sendMessage("§cПриглашение недействительно или лидер изменился!");
+                    return true;
+                }
+                
                 if (targetClan.getMembers().size() >= getConfig().getInt("clan.max-size", 5)) {
-                    p.sendMessage("§cКлан заполнен!");
+                    p.sendMessage("§cКлан уже заполнен!");
                     return true;
                 }
                 targetClan.getMembers().add(p.getUniqueId());
@@ -871,6 +879,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
     // ==========================================
     //           ПАССИВНЫЕ ЭФФЕКТЫ СПЕЦИАЛИЗАЦИЙ
     // ==========================================
+    @SuppressWarnings("deprecation")
     private void applyGuildPassives(Player player) {
         ClanPlayer cp = getClanPlayer(player.getUniqueId());
         Clan clan = cp.getClanId() != null ? clans.get(cp.getClanId()) : null;
@@ -895,8 +904,9 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
         }
 
         double maxHp = baseHp + (cp.getMaxHealthLevel() * 2);
-        player.setHealthScale(maxHp / 20.0);
-        player.setHealthScaled(true);
+        
+        // ВНИМАНИЕ: ЗДЕСЬ БЫЛА ОШИБКА ЗДОРОВЬЯ
+        player.setMaxHealth(maxHp); // Это правильный, работающий способ!
 
         switch (clan.getGuildType()) {
             case BLACKSMITH:
@@ -1038,7 +1048,6 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
                 }
 
                 if (msg.startsWith("!clan info")) {
-                    String discordId = event.getAuthor().getId();
                     for (Clan c : clans.values()) {
                         if (c.getDiscordRoleId() != null) {
                             Role r = event.getGuild().getRoleById(c.getDiscordRoleId());
@@ -1049,7 +1058,6 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
                         }
                     }
                 } else if (msg.startsWith("!clan top")) {
-                    String discordId = event.getAuthor().getId();
                     for (Clan c : clans.values()) {
                         if (c.getDiscordRoleId() != null) {
                             Role r = event.getGuild().getRoleById(c.getDiscordRoleId());
@@ -1177,38 +1185,6 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
     // ==========================================
     //           ДАННЫЕ И УТИЛИТЫ
     // ==========================================
-    public ItemStack getDirtyPointItem(int amount) {
-        return getCustomItem(Material.GOLD_NUGGET, "§6Осколок Влияния", dirtyKey);
-    }
-    public boolean isDirtyPoint(ItemStack item) {
-        return item != null && item.hasItemMeta() && item.getItemMeta().getPersistentDataContainer().has(dirtyKey, PersistentDataType.BYTE);
-    }
-    public int countDirtyPoints(Player player) {
-        int count = 0;
-        for (ItemStack item : player.getInventory().getContents()) if (isDirtyPoint(item)) count += item.getAmount();
-        return count;
-    }
-    public int consumeDirtyPoints(Player player, int amountToConsume) {
-        int consumed = 0;
-        ItemStack[] contents = player.getInventory().getContents();
-        for (int i = 0; i < contents.length; i++) {
-            ItemStack item = contents[i];
-            if (isDirtyPoint(item)) {
-                int stackAmount = item.getAmount();
-                if (consumed + stackAmount <= amountToConsume) {
-                    consumed += stackAmount;
-                    player.getInventory().setItem(i, null);
-                } else {
-                    int needed = amountToConsume - consumed;
-                    item.setAmount(stackAmount - needed);
-                    consumed += needed;
-                    break;
-                }
-            }
-        }
-        return consumed;
-    }
-
     public void markAsGuildItem(ItemStack item) {
         ItemMeta meta = item.getItemMeta();
         meta.getPersistentDataContainer().set(guildItemKey, PersistentDataType.BYTE, (byte) 1);
