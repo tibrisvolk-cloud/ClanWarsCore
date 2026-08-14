@@ -112,10 +112,8 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
         getServer().getPluginManager().registerEvents(this, this);
         getCommand("clan").setExecutor(this);
 
-        // Инициализация NPC-менеджера
         npcManager = new NPCManager(this);
 
-        // Пассивки для специализаций
         new BukkitRunnable() {
             @Override
             public void run() {
@@ -123,7 +121,6 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
             }
         }.runTaskTimer(this, 20L, 20L);
 
-        // Автосохранение каждые 5 минут
         new BukkitRunnable() {
             @Override
             public void run() {
@@ -668,7 +665,6 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
         Player killer = event.getEntity().getKiller();
         ClanPlayer cp = getClanPlayer(killer.getUniqueId());
 
-        // Проверяем, является ли моб "особым"
         if (!isSpecialMob(event.getEntity())) return;
 
         int limit = getConfig().getInt("limits.daily-pve-points", 500);
@@ -688,7 +684,6 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
 
     private boolean isSpecialMob(Entity entity) {
         List<String> allowedTypes = getConfig().getStringList("special-mobs.types");
-        // Если список не задан в конфиге, используем дефолтный набор
         if (allowedTypes.isEmpty()) {
             allowedTypes = Arrays.asList("WITHER", "ELDER_GUARDIAN", "RAVAGER", "ENDER_DRAGON");
         }
@@ -711,7 +706,6 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
         Player victim = event.getEntity();
         Player killer = victim.getKiller();
 
-        // Сохранение гильдейских артефактов
         List<ItemStack> saved = new ArrayList<>();
         Iterator<ItemStack> it = event.getDrops().iterator();
         while (it.hasNext()) {
@@ -723,7 +717,6 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
         }
         if (!saved.isEmpty()) soulboundItems.put(victim.getUniqueId(), saved);
 
-        // PvP очки
         if (killer != null && !killer.equals(victim)) {
             ClanPlayer vcp = getClanPlayer(victim.getUniqueId());
             ClanPlayer kcp = getClanPlayer(killer.getUniqueId());
@@ -747,14 +740,12 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
             if (vRank >= 0 && kRank >= 0) {
                 int diff = vRank - kRank;
                 if (diff > 0) {
-                    points *= Math.min(1 + 0.25 * diff, 3.0);
+                    points = (int)(points * Math.min(1 + 0.25 * diff, 3.0));
                 } else if (diff < 0) {
-                    points *= Math.max(1 - 0.5 * Math.abs(diff), 0);
+                    points = (int)(points * Math.max(1 - 0.5 * Math.abs(diff), 0));
                 }
             } else if (vRank < 0 && kRank >= 0) {
                 points = (int)(points * 0.5);
-            } else if (vRank >= 0 && kRank < 0) {
-                // полные очки
             }
 
             if (points > 0) {
@@ -823,7 +814,7 @@ public class ClanWarsCore extends JavaPlugin implements Listener, CommandExecuto
 
     @EventHandler
     public void onPrepareAnvil(PrepareAnvilEvent event) {
-        Player p = event.getView().getPlayer();
+        Player p = (Player) event.getView().getPlayer(); // исправлено приведение
         Clan clan = getClanPlayer(p.getUniqueId()).getClanId() != null ? clans.get(getClanPlayer(p.getUniqueId()).getClanId()) : null;
         GuildType type = clan != null ? clan.getGuildType() : GuildType.NONE;
         ItemStack slot2 = event.getInventory().getItem(1);
