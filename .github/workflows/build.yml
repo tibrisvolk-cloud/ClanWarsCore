@@ -12,6 +12,7 @@ jobs:
         with:
           java-version: '21'
           distribution: 'temurin'
+          cache: maven
 
       - name: Build with Maven
         run: mvn clean package -DskipTests
@@ -20,4 +21,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ClanWarsCore
-          path: target/ClanWarsCore.jar
+          path: target/*.jar # Теперь он точно найдет и скачает плагин!
