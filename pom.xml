@@ -6,8 +6,8 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.yourname</groupId>
-    <artifactId>IndepProfileBot</artifactId>
-    <version>1.0</version>
+    <artifactId>ClanWarsCore</artifactId> <!-- ИЗМЕНЕНО: Имя файла плагина -->
+    <version>2.0</version> <!-- ИЗМЕНЕНО: Версия под стать Сезону 2 -->
     <packaging>jar</packaging>
 
     <properties>
@@ -17,40 +17,27 @@
     </properties>
 
     <repositories>
+        <!-- Репозиторий PaperMC -->
         <repository>
-            <id>purpurmc</id>
-            <url>https://repo.purpurmc.org/snapshots</url>
-        </repository>
-        <repository>
-            <id>placeholderapi</id>
-            <url>https://repo.extendedclip.com/content/repositories/placeholderapi/</url>
+            <id>papermc</id>
+            <url>https://repo.papermc.io/repository/maven-public/</url>
         </repository>
     </repositories>
 
     <dependencies>
+        <!-- Paper API -->
         <dependency>
             <groupId>io.papermc.paper</groupId>
             <artifactId>paper-api</artifactId>
-            <version>1.21.11-R0.1-SNAPSHOT</version>
+            <version>1.21.1-R0.1-SNAPSHOT</version> <!-- ИСПРАВЛЕНА ОПЕЧАТКА -->
             <scope>provided</scope>
         </dependency>
-        <dependency>
-            <groupId>me.clip</groupId>
-            <artifactId>placeholderapi</artifactId>
-            <version>2.12.2</version>
-            <scope>provided</scope>
-        </dependency>
-        <!-- JDA -->
+        
+        <!-- JDA (Discord API) -->
         <dependency>
             <groupId>net.dv8tion</groupId>
             <artifactId>JDA</artifactId>
             <version>5.3.1</version>
-        </dependency>
-        <!-- Gson для подсчёта ачивок -->
-        <dependency>
-            <groupId>com.google.code.gson</groupId>
-            <artifactId>gson</artifactId>
-            <version>2.10.1</version>
             <scope>compile</scope>
         </dependency>
     </dependencies>
@@ -58,6 +45,7 @@
     <build>
         <finalName>${project.artifactId}</finalName>
         <plugins>
+            <!-- Компилятор -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
@@ -67,6 +55,8 @@
                     <target>21</target>
                 </configuration>
             </plugin>
+            
+            <!-- Shade Plugin для вшивания JDA внутрь плагина -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
@@ -81,11 +71,7 @@
                             <relocations>
                                 <relocation>
                                     <pattern>net.dv8tion.jda</pattern>
-                                    <shadedPattern>com.yourname.jda</shadedPattern>
-                                </relocation>
-                                <relocation>
-                                    <pattern>com.google.gson</pattern>
-                                    <shadedPattern>com.yourname.gson</shadedPattern>
+                                    <shadedPattern>com.yourname.clanwars.jda</shadedPattern> <!-- ИЗМЕНЕНО: Безопасный путь -->
                                 </relocation>
                             </relocations>
                         </configuration>
